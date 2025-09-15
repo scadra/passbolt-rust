@@ -1,0 +1,24 @@
+[package]
+name = "passbolt-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "Passbolt SDK — Multi-language FFI bindings (Python, Kotlin, Swift, C#)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "passbolt_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+passbolt-sdk = { path = "../passbolt-sdk", features = ["native"] }
+uniffi = { version = "0.29", features = ["cli"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+secrecy = "0.10"
+chrono = "0.4"
+
+[lints]
+workspace = true

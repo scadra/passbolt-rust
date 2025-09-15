@@ -1,0 +1,23 @@
+[workspace]
+members = ["crates/passbolt-sdk", "crates/passbolt-cli", "crates/passbolt-wasm", "crates/passbolt-ffi"]
+resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Too noisy — add docs incrementally later
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Common in public API types
+module_name_repetitions = "allow"
+# sem/set, etc. — fine
+similar_names = "allow"
+
+[profile.release]
+strip = true
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,52 @@
+[package]
+name = "passbolt-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Passbolt SDK — Rust library for the Passbolt API"
+license = "MIT"
+
+[features]
+default = ["native"]
+native = ["dep:reqwest", "dep:tokio"]
+totp = ["dep:totp-rs"]
+full = ["native", "totp"]
+
+[dependencies]
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Sérialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Sécurité mémoire
+zeroize = { version = "1", features = ["derive"] }
+secrecy = { version = "0.10", features = ["serde"] }
+
+# OpenPGP — pure Rust
+pgp = "0.14"
+rand = "0.8"
+
+# HIBP password breach check
+sha1 = "0.10"
+
+# Utils
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+hex = "0.4"
+percent-encoding = "2"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+
+# Async runtime (gated behind native feature)
+tokio = { version = "1", features = ["full"], optional = true }
+
+# HTTP client (gated behind native feature)
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"], default-features = false, optional = true }
+
+# TOTP (gated behind totp feature)
+totp-rs = { version = "5", features = ["serde_support", "gen_secret"], optional = true }
+
+[lints]
+workspace = true
