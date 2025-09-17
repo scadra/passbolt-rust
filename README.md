@@ -1,8 +1,59 @@
-# passbolt-rs
 
-A fast, secure CLI for [Passbolt](https://www.passbolt.com/) — written in Rust.
+	      ____                  __          ____
+	     / __ \____  _____ ____/ /_  ____  / / /_
+	    / /_/ / __ `/ ___/ ___/ __ \/ __ \/ / __/
+	   / ____/ /_/ (__  |__  ) /_/ / /_/ / / /_
+	  /_/    \__,_/____/____/_.___/\____/_/\__/
+
+	Open source password manager for teams
+	(c) 2025 Passbolt SA
+	https://www.passbolt.com
+
+## License
+
+Passbolt - Open source password manager for teams
+
+(c) 2025 Passbolt SA
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General
+Public License (AGPL) as published by the Free Software Foundation version 3.
+
+The name "Passbolt" is a registered trademark of Passbolt SA, and Passbolt SA hereby declines to grant a trademark
+license to "Passbolt" pursuant to the GNU Affero General Public License version 3 Section 7(e), without a separate
+agreement with Passbolt SA.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along with this program. If not,
+see [GNU Affero General Public License v3](http://www.gnu.org/licenses/agpl-3.0.html).
+
+## About passbolt
+
+Passbolt is an open source password manager for teams. It allows to securely share and store credentials.
+For instance, the wifi password of your office, or the administrator password of a router, or your organisation social
+media account password, all of them can be secured using Passbolt.
+
+You can try a demo of passbolt at [https://demo.passbolt.com](https://demo.passbolt.com).
+
+## About passbolt-rs
+
+A fast, secure CLI and SDK for [Passbolt](https://www.passbolt.com/) — written in Rust.
 
 Full alternative to [go-passbolt-cli](https://github.com/passbolt/go-passbolt-cli) with no OpenSSL dependency (pure Rust TLS + GPG).
+The workspace also ships the `passbolt-sdk` library and its WASM and FFI bindings (see [docs/sdk-specs](docs/sdk-specs/README.md)).
+
+> Known gaps with go-passbolt / go-passbolt-cli are tracked in [docs/PARITY-GO.md](docs/PARITY-GO.md).
+
+# Contributing
+
+Please check [CONTRIBUTING.md](CONTRIBUTING.md) for more information about how to get involved.
+
+## Reporting a security Issue
+
+If you've found a security related issue in Passbolt, please don't open an issue on GitHub. Follow our responsible disclosure process: https://www.passbolt.com/docs/contribute/security/vulnerability/.
+
+# Quick how-to
 
 ---
 
@@ -34,8 +85,8 @@ Full alternative to [go-passbolt-cli](https://github.com/passbolt/go-passbolt-cl
 ## Installation
 
 ```bash
-git clone https://github.com/yourorg/passbolt-rs
-cd passbolt-rs
+git clone https://github.com/scadra/passbolt-rust.git
+cd passbolt-rust
 cargo build --release
 # binary at target/release/passbolt
 sudo cp target/release/passbolt /usr/local/bin/
@@ -568,7 +619,7 @@ Used with `create resource` and `update resource`:
 
 | Value | Meaning |
 |---|---|
-| `"2026-12-31T00:00:00Z"` | Absolute date (RFC3339) |
+| `"2025-12-31T00:00:00Z"` | Absolute date (RFC3339) |
 | `"90d"` | 90 days from now |
 | `"48h"` | 48 hours from now |
 | `"30m"` | 30 minutes from now |
@@ -645,6 +696,11 @@ cargo build --release
 cargo test
 cargo clippy -- -D warnings
 cargo fmt
+bash scripts/license-headers.sh   # every .rs file must carry the Passbolt license header
 ```
 
 Tests use `assert_cmd` + `mockito` for HTTP mocking. See `tests/` directory.
+
+# Credits
+
+https://www.passbolt.com/credits
