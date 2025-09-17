@@ -1,5 +1,7 @@
 # Passbolt Universal SDK — Roadmap
 
+> Écarts et tickets vis-à-vis de go-passbolt / go-passbolt-cli : voir [PARITY-GO.md](./PARITY-GO.md).
+
 ## Context
 
 Le CLI Rust `passbolt-rs` (45 fichiers, ~4,500 LOC) contient toute la logique Passbolt (auth GPG, crypto PGP, CRUD, metadata v5) couplée au binaire. L'objectif : extraire un **SDK Rust universel** réutilisable depuis Rust CLI, Node.js (n8n), browser extension (WASM), Python, Java, .NET.

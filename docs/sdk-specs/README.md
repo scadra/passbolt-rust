@@ -43,6 +43,7 @@ The Passbolt Rust SDK is a native Rust reimplementation of the core business log
 
 ### Reference
 - [API Reference](./api-reference.md) - Complete mapping of JS events to Rust SDK methods
+- [Parity with go-passbolt](../PARITY-GO.md) - Gaps and candidate tickets vs go-passbolt / go-passbolt-cli
 
 ## Versioning & Licence
 

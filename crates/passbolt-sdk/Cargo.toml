@@ -3,7 +3,7 @@ name = "passbolt-sdk"
 version = "0.1.0"
 edition = "2021"
 description = "Passbolt SDK — Rust library for the Passbolt API"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [features]
 default = ["native"]

@@ -1,1 +1,41 @@
+# Rust build #
+######################
 /target
+**/target
+*.rs.bk
+
+# WASM / FFI build output #
+######################
+/crates/passbolt-wasm/pkg
+/crates/passbolt-ffi/bindings
+*.wasm
+*.so
+*.dylib
+*.dll
+
+# Secrets & exports (never commit) #
+######################
+.env
+*.kdbx
+*.asc
+*.gpg
+*.pem
+*.key
+config.toml
+
+# Coverage & profiling #
+######################
+/coverage
+*.profraw
+lcov.info
+tarpaulin-report.html
+
+# OS & editors #
+######################
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.swp
+*.swo
+*~
