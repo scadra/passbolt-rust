@@ -2,6 +2,7 @@
 name = "passbolt-sdk"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 description = "Passbolt SDK — Rust library for the Passbolt API"
 license = "AGPL-3.0-or-later"
 
@@ -32,7 +33,7 @@ rand = "0.8"
 sha1 = "0.10"
 
 # Utils
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.34", features = ["serde"] }
 base64 = "0.22"
 hex = "0.4"
 percent-encoding = "2"
@@ -50,3 +51,9 @@ totp-rs = { version = "5", features = ["serde_support", "gen_secret"], optional 
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest = "1"
+rstest = "0.28"
+tokio = { version = "1", features = ["macros", "rt"] }
+wiremock = "0.6"
