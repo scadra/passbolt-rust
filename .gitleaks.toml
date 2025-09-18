@@ -1,0 +1,7 @@
+# Test-only OpenPGP keys, see crates/passbolt-sdk/tests/fixtures/keys/README.md
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test-only fixture keys"
+paths = ['''crates/[^/]+/tests/fixtures/keys/[^/]+\.asc''']
