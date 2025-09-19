@@ -36,7 +36,7 @@ fn to_js_error(e: PassboltError) -> JsError {
 }
 
 fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsError> {
-    serde_wasm_bindgen::to_value(val).map_err(|e| JsError::new(&e.to_string()))
+    serde_wasm_bindgen::to_value(val).map_err(|error| JsError::new(&error.to_string()))
 }
 
 // ── PassboltSession ──────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ impl PassboltSession {
         passphrase: String,
     ) -> Result<Self, JsError> {
         let http = WasmHttpClient::new();
-        let cfg = SdkConfig {
+        let config = SdkConfig {
             server_url,
             private_key_armored,
             passphrase: secrecy::SecretString::from(passphrase),
@@ -80,7 +80,7 @@ impl PassboltSession {
             server_verify_token: String::new(),
         };
 
-        let client = Client::login(http, &cfg, None, 3)
+        let client = Client::login(http, &config, None, 3)
             .await
             .map_err(to_js_error)?;
 
@@ -128,7 +128,7 @@ impl PassboltSession {
     pub async fn decrypt_resource_secret(&self, resource_js: JsValue) -> Result<JsValue, JsError> {
         let resource: passbolt_sdk::types::Resource =
             serde_wasm_bindgen::from_value(resource_js)
-                .map_err(|e| JsError::new(&format!("Invalid resource: {e}")))?;
+                .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
         let secret = self
             .client
             .decrypt_resource_secret(&resource)
@@ -271,9 +271,9 @@ pub fn decrypt_message(
     passphrase: &str,
 ) -> Result<Vec<u8>, JsError> {
     let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+        .map_err(|error| JsError::new(&error.to_string()))?;
     passbolt_sdk::crypto::decrypt_message(armored_message, &key.key, passphrase)
-        .map_err(|e| JsError::new(&e.to_string()))
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Encrypt a plaintext message for one or more PGP public keys.
@@ -285,18 +285,18 @@ pub fn encrypt_message(
 ) -> Result<String, JsError> {
     let parsed: Result<Vec<_>, _> = public_keys_armored
         .iter()
-        .map(|k| passbolt_sdk::crypto::parse_public_key(k))
+        .map(|armored_key| passbolt_sdk::crypto::parse_public_key(armored_key))
         .collect();
-    let keys = parsed.map_err(|e| JsError::new(&e.to_string()))?;
+    let keys = parsed.map_err(|error| JsError::new(&error.to_string()))?;
     let key_refs: Vec<_> = keys.iter().collect();
     passbolt_sdk::crypto::encrypt_message(plaintext, &key_refs)
-        .map_err(|e| JsError::new(&e.to_string()))
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Parse a PGP private key and return its fingerprint (hex uppercase).
 #[wasm_bindgen(js_name = "getKeyFingerprint")]
 pub fn get_key_fingerprint(private_key_armored: &str) -> Result<String, JsError> {
     let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+        .map_err(|error| JsError::new(&error.to_string()))?;
     Ok(key.fingerprint.clone())
 }

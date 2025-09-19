@@ -58,14 +58,14 @@ pub async fn run(args: &ExecArgs, client: &Client) -> Result<()> {
     let program = &args.command[0];
     let program_args = &args.command[1..];
 
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(program_args);
+    let mut command = std::process::Command::new(program);
+    command.args(program_args);
 
-    for (k, v) in &extra_env {
-        cmd.env(k, v);
+    for (name, value) in &extra_env {
+        command.env(name, value);
     }
 
-    let status = cmd
+    let status = command
         .status()
         .with_context(|| format!("Failed to execute: {program}"))?;
 

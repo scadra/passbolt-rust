@@ -55,14 +55,14 @@ impl Storage for MemoryStorage {
         let guard = self
             .data
             .read()
-            .map_err(|e| PassboltError::Other(format!("Storage lock poisoned: {e}")))?;
+            .map_err(|error| PassboltError::Other(format!("Storage lock poisoned: {error}")))?;
         Ok(guard.get(key).cloned())
     }
 
     async fn set(&self, key: &str, value: &[u8]) -> Result<(), PassboltError> {
         self.data
             .write()
-            .map_err(|e| PassboltError::Other(format!("Storage lock poisoned: {e}")))?
+            .map_err(|error| PassboltError::Other(format!("Storage lock poisoned: {error}")))?
             .insert(key.to_string(), value.to_vec());
         Ok(())
     }
@@ -70,7 +70,7 @@ impl Storage for MemoryStorage {
     async fn remove(&self, key: &str) -> Result<(), PassboltError> {
         self.data
             .write()
-            .map_err(|e| PassboltError::Other(format!("Storage lock poisoned: {e}")))?
+            .map_err(|error| PassboltError::Other(format!("Storage lock poisoned: {error}")))?
             .remove(key);
         Ok(())
     }
@@ -78,7 +78,7 @@ impl Storage for MemoryStorage {
     async fn clear(&self) -> Result<(), PassboltError> {
         self.data
             .write()
-            .map_err(|e| PassboltError::Other(format!("Storage lock poisoned: {e}")))?
+            .map_err(|error| PassboltError::Other(format!("Storage lock poisoned: {error}")))?
             .clear();
         Ok(())
     }

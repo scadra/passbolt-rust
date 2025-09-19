@@ -16,15 +16,15 @@ use crate::filter::{filter_entities, Filter};
 use crate::types::Folder;
 
 #[must_use]
-pub fn folder_fields(f: &Folder) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    m.insert("id".into(), f.id.clone());
-    m.insert("name".into(), f.name.clone());
-    m.insert(
+pub fn folder_fields(folder: &Folder) -> HashMap<String, String> {
+    let mut fields = HashMap::new();
+    fields.insert("id".into(), folder.id.clone());
+    fields.insert("name".into(), folder.name.clone());
+    fields.insert(
         "folder_parent_id".into(),
-        f.folder_parent_id.clone().unwrap_or_default(),
+        folder.folder_parent_id.clone().unwrap_or_default(),
     );
-    m
+    fields
 }
 
 pub fn filter_folders(folders: Vec<Folder>, filters: &[Filter]) -> Vec<Folder> {

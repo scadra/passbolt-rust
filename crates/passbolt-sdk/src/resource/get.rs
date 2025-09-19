@@ -56,11 +56,11 @@ pub async fn get_totp_code<H: HttpClient>(
         .context("Resource has no TOTP data (not a TOTP resource type)")?;
 
     let secret_key = totp_data.secret_key.as_deref().unwrap_or("").to_uppercase();
-    let algo_str = totp_data.algorithm.as_deref().unwrap_or("SHA1");
+    let algorithm_name = totp_data.algorithm.as_deref().unwrap_or("SHA1");
     let digits = totp_data.digits.unwrap_or(6) as usize;
     let period = totp_data.period.unwrap_or(30);
 
-    let algorithm = match algo_str.to_uppercase().as_str() {
+    let algorithm = match algorithm_name.to_uppercase().as_str() {
         "SHA256" => Algorithm::SHA256,
         "SHA512" => Algorithm::SHA512,
         _ => Algorithm::SHA1,

@@ -33,53 +33,57 @@ impl WasmHttpClient {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<HttpResponse, TransportError> {
-        let opts = RequestInit::new();
-        opts.set_method(method);
-        opts.set_credentials(RequestCredentials::Include);
-        opts.set_mode(RequestMode::Cors);
+        let request_init = RequestInit::new();
+        request_init.set_method(method);
+        request_init.set_credentials(RequestCredentials::Include);
+        request_init.set_mode(RequestMode::Cors);
 
         // Set headers
-        let h = Headers::new().map_err(|e| js_err("Headers::new", &e))?;
-        h.set("Content-Type", "application/json")
-            .map_err(|e| js_err("set Content-Type", &e))?;
-        h.set("Accept", "application/json")
-            .map_err(|e| js_err("set Accept", &e))?;
-        for &(k, v) in headers {
-            h.set(k, v).map_err(|e| js_err("set header", &e))?;
+        let request_headers = Headers::new().map_err(|error| js_err("Headers::new", &error))?;
+        request_headers
+            .set("Content-Type", "application/json")
+            .map_err(|error| js_err("set Content-Type", &error))?;
+        request_headers
+            .set("Accept", "application/json")
+            .map_err(|error| js_err("set Accept", &error))?;
+        for &(name, value) in headers {
+            request_headers
+                .set(name, value)
+                .map_err(|error| js_err("set header", &error))?;
         }
-        opts.set_headers(&h);
+        request_init.set_headers(&request_headers);
 
         // Set body if present
         if let Some(bytes) = body {
-            let uint8 = Uint8Array::from(bytes);
-            opts.set_body(&uint8);
+            let body_array = Uint8Array::from(bytes);
+            request_init.set_body(&body_array);
         }
 
-        let request =
-            Request::new_with_str_and_init(url, &opts).map_err(|e| js_err("Request::new", &e))?;
+        let request = Request::new_with_str_and_init(url, &request_init)
+            .map_err(|error| js_err("Request::new", &error))?;
 
         let window = web_sys::window()
             .ok_or_else(|| TransportError::Http("No global window object available".into()))?;
 
-        let resp_value = JsFuture::from(window.fetch_with_request(&request))
+        let response_value = JsFuture::from(window.fetch_with_request(&request))
             .await
-            .map_err(|e| js_err(&format!("{method} {url}"), &e))?;
+            .map_err(|error| js_err(&format!("{method} {url}"), &error))?;
 
-        let resp: Response = resp_value
+        let response: Response = response_value
             .dyn_into()
             .map_err(|_| TransportError::Http("Response is not a Response object".into()))?;
 
-        let status = resp.status();
+        let status = response.status();
 
         // Extract response headers
-        let resp_headers = resp.headers();
+        let response_headers = response.headers();
         let mut header_vec: Vec<(String, String)> = Vec::new();
 
         // Iterate through headers using js_sys
-        let entries = js_sys::try_iter(&resp_headers).ok().flatten();
-        if let Some(iter) = entries {
-            for val in iter.flatten() {
-                let pair: Array = val.into();
+        let entries = js_sys::try_iter(&response_headers).ok().flatten();
+        if let Some(entry_iterator) = entries {
+            for entry in entry_iterator.flatten() {
+                let pair: Array = entry.into();
                 let key = pair.get(0).as_string().unwrap_or_default();
                 let value = pair.get(1).as_string().unwrap_or_default();
                 header_vec.push((key, value));
@@ -87,12 +91,12 @@ impl WasmHttpClient {
         }
 
         // Read body as bytes
-        let body_promise = resp
+        let body_promise = response
             .array_buffer()
-            .map_err(|e| js_err("arrayBuffer()", &e))?;
+            .map_err(|error| js_err("arrayBuffer()", &error))?;
         let body_value = JsFuture::from(body_promise)
             .await
-            .map_err(|e| js_err("read body", &e))?;
+            .map_err(|error| js_err("read body", &error))?;
         let body_bytes = Uint8Array::new(&body_value).to_vec();
 
         Ok(HttpResponse {
@@ -149,9 +153,9 @@ impl HttpClient for WasmHttpClient {
 }
 
 fn js_err(context: &str, err: &JsValue) -> TransportError {
-    let msg = err
+    let message = err
         .as_string()
         .or_else(|| js_sys::JSON::stringify(err).ok().map(String::from))
         .unwrap_or_else(|| format!("{err:?}"));
-    TransportError::Network(format!("{context}: {msg}"))
+    TransportError::Network(format!("{context}: {message}"))
 }

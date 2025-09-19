@@ -113,7 +113,7 @@ pub enum PassboltError {
 
 /// Transition helper: convert any `anyhow::Error` into `PassboltError::Other`.
 impl From<anyhow::Error> for PassboltError {
-    fn from(err: anyhow::Error) -> Self {
-        Self::Other(format!("{err:#}"))
+    fn from(error: anyhow::Error) -> Self {
+        Self::Other(format!("{error:#}"))
     }
 }

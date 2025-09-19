@@ -1,11 +1,11 @@
 // Passbolt ~ Open source password manager for teams
-// Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+// Copyright (column) 2025 Passbolt SA (https://www.passbolt.com)
 //
 // Licensed under GNU Affero General Public License version 3 of the or any later version.
 // For full copyright and license information, please see the LICENSE
 // Redistributions of files must retain the above copyright notice.
 //
-// @copyright     Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+// @copyright     Copyright (column) 2025 Passbolt SA (https://www.passbolt.com)
 // @license       https://opensource.org/licenses/AGPL-3.0 AGPL License
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
@@ -36,11 +36,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load config and apply CLI overrides
-    let mut cfg = Config::load().unwrap_or_default();
-    apply_cli_overrides(&cli, &mut cfg)?;
+    let mut config = Config::load().unwrap_or_default();
+    apply_cli_overrides(&cli, &mut config)?;
 
     if cli.debug {
-        eprintln!("[debug] server: {}", cfg.server_address);
+        eprintln!("[debug] server: {}", config.server_address);
     }
 
     match &cli.command {
@@ -51,14 +51,14 @@ async fn main() -> Result<()> {
 
         // ── Verify ─────────────────────────────────────────────────────────
         Commands::Verify(args) => {
-            cli::verify::run(args, &mut cfg).await?;
+            cli::verify::run(args, &mut config).await?;
         }
 
         // ── Shell completions ──────────────────────────────────────────────
         Commands::Completion { shell } => {
-            let mut cmd = Cli::command();
-            let name = cmd.get_name().to_string();
-            generate(*shell, &mut cmd, name, &mut std::io::stdout());
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            generate(*shell, &mut command, name, &mut std::io::stdout());
         }
 
         // ── Documentation generation ───────────────────────────────────────
@@ -67,9 +67,9 @@ async fn main() -> Result<()> {
         }
 
         // All other commands require a connected client
-        cmd => {
-            let client = session::get_client(&cfg).await?;
-            let result = dispatch(cmd, &client, cli.json, cfg.workers).await;
+        command => {
+            let client = session::get_client(&config).await?;
+            let result = dispatch(command, &client, cli.json, config.workers).await;
             client.logout().await;
             result?;
         }
@@ -79,89 +79,90 @@ async fn main() -> Result<()> {
 }
 
 /// Apply CLI flag overrides on top of loaded config.
-fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> Result<()> {
-    if let Some(v) = &cli.server_address {
-        cfg.server_address.clone_from(v);
+fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> Result<()> {
+    if let Some(value) = &cli.server_address {
+        config.server_address.clone_from(value);
     }
-    if let Some(v) = &cli.user_private_key {
-        cfg.user_private_key.clone_from(v);
+    if let Some(value) = &cli.user_private_key {
+        config.user_private_key.clone_from(value);
     }
-    if let Some(v) = &cli.user_private_key_file {
-        cfg.user_private_key_file.clone_from(v);
+    if let Some(value) = &cli.user_private_key_file {
+        config.user_private_key_file.clone_from(value);
     }
-    if let Some(v) = &cli.user_password {
-        cfg.user_password.clone_from(v);
+    if let Some(value) = &cli.user_password {
+        config.user_password.clone_from(value);
     }
-    if let Some(v) = &cli.mfa_mode {
-        cfg.mfa_mode.clone_from(v);
+    if let Some(value) = &cli.mfa_mode {
+        config.mfa_mode.clone_from(value);
     }
-    if let Some(v) = &cli.mfa_totp_token {
-        cfg.mfa_totp_token.clone_from(v);
+    if let Some(value) = &cli.mfa_totp_token {
+        config.mfa_totp_token.clone_from(value);
     }
-    if let Some(v) = cli.mfa_totp_offset {
-        cfg.mfa_totp_offset = v;
+    if let Some(value) = cli.mfa_totp_offset {
+        config.mfa_totp_offset = value;
     }
-    if let Some(v) = cli.mfa_retrys {
-        cfg.mfa_retrys = v;
+    if let Some(value) = cli.mfa_retrys {
+        config.mfa_retrys = value;
     }
-    if let Some(v) = &cli.mfa_delay {
-        cfg.mfa_delay.clone_from(v);
+    if let Some(value) = &cli.mfa_delay {
+        config.mfa_delay.clone_from(value);
     }
     if cli.tls_skip_verify {
-        cfg.tls_skip_verify = true;
+        config.tls_skip_verify = true;
     }
-    if let Some(v) = &cli.tls_client_cert {
-        cfg.tls_client_cert.clone_from(v);
+    if let Some(value) = &cli.tls_client_cert {
+        config.tls_client_cert.clone_from(value);
     }
-    if let Some(v) = &cli.tls_client_private_key {
-        cfg.tls_client_private_key.clone_from(v);
+    if let Some(value) = &cli.tls_client_private_key {
+        config.tls_client_private_key.clone_from(value);
     }
     if let Some(path) = &cli.tls_client_cert_file {
-        cfg.tls_client_cert = std::fs::read_to_string(path)
+        config.tls_client_cert = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read TLS client cert file: {path}"))?;
     }
     if let Some(path) = &cli.tls_client_private_key_file {
-        cfg.tls_client_private_key = std::fs::read_to_string(path)
+        config.tls_client_private_key = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read TLS client private key file: {path}"))?;
     }
-    if let Some(v) = &cli.proxy {
-        cfg.proxy.clone_from(v);
+    if let Some(value) = &cli.proxy {
+        config.proxy.clone_from(value);
     }
-    if let Some(v) = &cli.timeout {
-        cfg.timeout.clone_from(v);
+    if let Some(value) = &cli.timeout {
+        config.timeout.clone_from(value);
     }
-    if let Some(v) = cli.workers {
-        if v > 0 {
-            cfg.workers = v;
+    if let Some(value) = cli.workers {
+        if value > 0 {
+            config.workers = value;
         }
     }
     if cli.debug {
-        cfg.debug = true;
+        config.debug = true;
     }
     Ok(())
 }
 
-fn parse_filters(exprs: &[String]) -> Result<Vec<passbolt_sdk::filter::Filter>> {
-    exprs
+fn parse_filters(expressions: &[String]) -> Result<Vec<passbolt_sdk::filter::Filter>> {
+    expressions
         .iter()
-        .map(|f| passbolt_sdk::filter::Filter::parse(f))
+        .map(|expression| passbolt_sdk::filter::Filter::parse(expression))
         .collect()
 }
 
-fn parse_expiry_opt(s: Option<&String>) -> Result<Option<serde_json::Value>> {
-    s.map(String::as_str)
+fn parse_expiry_opt(expiry: Option<&String>) -> Result<Option<serde_json::Value>> {
+    expiry
+        .map(String::as_str)
         .map(passbolt_sdk::resource::expiry::parse_expiry)
         .transpose()
 }
 
 #[allow(clippy::too_many_lines)]
 async fn dispatch(
-    cmd: &Commands,
+    command: &Commands,
     client: &Client,
     json_output: bool,
     workers: usize,
 ) -> Result<()> {
-    match cmd {
+    match command {
         // ── Create ──────────────────────────────────────────────────────────
         Commands::Create(args) => match &args.entity {
             CreateEntity::Resource {
@@ -189,34 +190,34 @@ async fn dispatch(
                     issuer: totp_issuer.clone(),
                 });
 
-                let pwd: Option<String> = if let Some(p) = password {
-                    Some(p.clone())
+                let resolved_password: Option<String> = if let Some(provided_password) = password {
+                    Some(provided_password.clone())
                 } else if totp.is_none() {
-                    let s = read_password("Password: ")?;
-                    Some(s.expose_secret().to_string())
+                    let prompted_password = read_password("Password: ")?;
+                    Some(prompted_password.expose_secret().to_string())
                 } else {
                     None
                 };
 
-                let expiry_val = parse_expiry_opt(expiry.as_ref())?;
+                let expiry_value = parse_expiry_opt(expiry.as_ref())?;
 
-                let res = passbolt_sdk::resource::create::create_resource(
+                let resource = passbolt_sdk::resource::create::create_resource(
                     client,
                     name,
                     username.as_deref(),
                     uri.as_deref(),
                     description.as_deref(),
-                    pwd.as_deref(),
+                    resolved_password.as_deref(),
                     folder_parent_id.as_deref(),
-                    expiry_val,
+                    expiry_value,
                     totp,
                 )
                 .await?;
 
                 if json_output {
-                    output::print_json(&res)?;
+                    output::print_json(&resource)?;
                 } else {
-                    println!("Created resource: {} ({})", res.name, res.id);
+                    println!("Created resource: {} ({})", resource.name, resource.id);
                 }
             }
 
@@ -279,14 +280,18 @@ async fn dispatch(
         // ── Get ─────────────────────────────────────────────────────────────
         Commands::Get(args) => match &args.entity {
             GetEntity::Resource { id } => {
-                let res = passbolt_sdk::resource::get::get_resource(client, id).await?;
-                let secret = passbolt_sdk::resource::get::get_resource_secret(client, &res).await?;
+                let resource = passbolt_sdk::resource::get::get_resource(client, id).await?;
+                let secret =
+                    passbolt_sdk::resource::get::get_resource_secret(client, &resource).await?;
 
-                let meta = if res.is_v5() {
-                    match client.decrypt_resource_metadata(&res).await {
-                        Ok(m) => m,
-                        Err(e) => {
-                            eprintln!("[warn] Cannot decrypt metadata for '{}': {e}", res.id);
+                let metadata = if resource.is_v5() {
+                    match client.decrypt_resource_metadata(&resource).await {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            eprintln!(
+                                "[warn] Cannot decrypt metadata for '{}': {error}",
+                                resource.id
+                            );
                             None
                         }
                     }
@@ -294,38 +299,41 @@ async fn dispatch(
                     None
                 };
 
-                let name = meta
+                let name = metadata
                     .as_ref()
-                    .and_then(|m| m.name.as_deref())
-                    .unwrap_or(&res.name);
-                let username = meta
+                    .and_then(|metadata| metadata.name.as_deref())
+                    .unwrap_or(&resource.name);
+                let username = metadata
                     .as_ref()
-                    .and_then(|m| m.username.as_deref())
-                    .unwrap_or_else(|| res.username.as_deref().unwrap_or(""));
-                let uri = meta
+                    .and_then(|metadata| metadata.username.as_deref())
+                    .unwrap_or_else(|| resource.username.as_deref().unwrap_or(""));
+                let uri = metadata
                     .as_ref()
-                    .and_then(|m| m.uris.as_ref()?.first()?.uri.as_deref())
-                    .unwrap_or_else(|| res.uri.as_deref().unwrap_or(""));
-                let description = meta
+                    .and_then(|metadata| metadata.uris.as_ref()?.first()?.uri.as_deref())
+                    .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""));
+                let description = metadata
                     .as_ref()
-                    .and_then(|m| m.description.as_deref())
+                    .and_then(|metadata| metadata.description.as_deref())
                     .unwrap_or_else(|| secret.description.as_deref().unwrap_or(""));
 
                 if json_output {
-                    let mut v = serde_json::to_value(&res)?;
-                    v["password"] =
+                    let mut resource_json = serde_json::to_value(&resource)?;
+                    resource_json["password"] =
                         serde_json::Value::String(secret.password.clone().unwrap_or_default());
-                    if meta.is_some() {
-                        v["name"] = serde_json::json!(name);
-                        v["username"] = serde_json::json!(username);
-                        v["uri"] = serde_json::json!(uri);
-                        v["description"] = serde_json::json!(description);
+                    if metadata.is_some() {
+                        resource_json["name"] = serde_json::json!(name);
+                        resource_json["username"] = serde_json::json!(username);
+                        resource_json["uri"] = serde_json::json!(uri);
+                        resource_json["description"] = serde_json::json!(description);
                     }
-                    output::print_json(&v)?;
+                    output::print_json(&resource_json)?;
                 } else {
-                    let expiry = res.expired.map(|d| d.to_rfc3339()).unwrap_or_default();
+                    let expiry = resource
+                        .expired
+                        .map(|date| date.to_rfc3339())
+                        .unwrap_or_default();
                     output::print_kv(&[
-                        ("ID", res.id.as_str()),
+                        ("ID", resource.id.as_str()),
                         ("Name", name),
                         ("Username", username),
                         ("URI", uri),
@@ -340,18 +348,18 @@ async fn dispatch(
             }
 
             GetEntity::ResourcePermissions { id, .. } => {
-                let perms =
+                let permissions =
                     passbolt_sdk::resource::get::get_resource_permissions(client, id).await?;
                 if json_output {
-                    output::print_json(&perms)?;
+                    output::print_json(&permissions)?;
                 } else {
-                    let rows: Vec<Vec<String>> = perms
+                    let rows: Vec<Vec<String>> = permissions
                         .iter()
-                        .map(|p| {
+                        .map(|permission| {
                             vec![
-                                p.aro.clone().unwrap_or_default(),
-                                p.aro_foreign_key.clone().unwrap_or_default(),
-                                p.type_name().to_string(),
+                                permission.aro.clone().unwrap_or_default(),
+                                permission.aro_foreign_key.clone().unwrap_or_default(),
+                                permission.type_name().to_string(),
                             ]
                         })
                         .collect();
@@ -376,17 +384,17 @@ async fn dispatch(
             }
 
             GetEntity::FolderPermissions { id, .. } => {
-                let perms = client.get_folder_permissions(id).await?;
+                let permissions = client.get_folder_permissions(id).await?;
                 if json_output {
-                    output::print_json(&perms)?;
+                    output::print_json(&permissions)?;
                 } else {
-                    let rows: Vec<Vec<String>> = perms
+                    let rows: Vec<Vec<String>> = permissions
                         .iter()
-                        .map(|p| {
+                        .map(|permission| {
                             vec![
-                                p.aro.clone().unwrap_or_default(),
-                                p.aro_foreign_key.clone().unwrap_or_default(),
-                                p.type_name().to_string(),
+                                permission.aro.clone().unwrap_or_default(),
+                                permission.aro_foreign_key.clone().unwrap_or_default(),
+                                permission.type_name().to_string(),
                             ]
                         })
                         .collect();
@@ -418,10 +426,10 @@ async fn dispatch(
                     let rows: Vec<Vec<String>> = group
                         .groups_users
                         .iter()
-                        .map(|gu| {
+                        .map(|group_user| {
                             vec![
-                                gu.user_id.clone().unwrap_or_default(),
-                                if gu.is_admin.unwrap_or(false) {
+                                group_user.user_id.clone().unwrap_or_default(),
+                                if group_user.is_admin.unwrap_or(false) {
                                     "Manager".into()
                                 } else {
                                     "Member".into()
@@ -470,16 +478,19 @@ async fn dispatch(
                 if json_output {
                     output::print_json_with_columns(&resources, column)?;
                 } else {
-                    let default_cols = ["ID", "FolderParentID", "Name", "Username", "URI"];
-                    let effective_cols: Vec<String> = if column.is_empty() {
-                        default_cols.iter().map(|s| (*s).to_string()).collect()
+                    let default_columns = ["ID", "FolderParentID", "Name", "Username", "URI"];
+                    let effective_columns: Vec<String> = if column.is_empty() {
+                        default_columns
+                            .iter()
+                            .map(|column| (*column).to_string())
+                            .collect()
                     } else {
                         column.clone()
                     };
 
-                    let needs_decrypt = effective_cols
-                        .iter()
-                        .any(|c| matches!(c.to_lowercase().as_str(), "password" | "description"));
+                    let needs_decrypt = effective_columns.iter().any(|column| {
+                        matches!(column.to_lowercase().as_str(), "password" | "description")
+                    });
 
                     let secrets = if needs_decrypt {
                         client.decrypt_secrets_batch(&resources, workers).await?
@@ -491,53 +502,62 @@ async fn dispatch(
 
                     let rows: Vec<Vec<String>> = resources
                         .iter()
-                        .map(|r| {
-                            let secret = secrets.get(&r.id);
-                            let meta = metadatas.get(&r.id);
-                            effective_cols
+                        .map(|resource| {
+                            let secret = secrets.get(&resource.id);
+                            let metadata = metadatas.get(&resource.id);
+                            effective_columns
                                 .iter()
-                                .map(|c| match c.to_lowercase().as_str() {
-                                    "id" => r.id.clone(),
-                                    "name" => meta
-                                        .and_then(|m| m.name.as_deref())
-                                        .unwrap_or(&r.name)
+                                .map(|column| match column.to_lowercase().as_str() {
+                                    "id" => resource.id.clone(),
+                                    "name" => metadata
+                                        .and_then(|metadata| metadata.name.as_deref())
+                                        .unwrap_or(&resource.name)
                                         .to_string(),
-                                    "username" => meta
-                                        .and_then(|m| m.username.as_deref())
-                                        .unwrap_or_else(|| r.username.as_deref().unwrap_or(""))
+                                    "username" => metadata
+                                        .and_then(|metadata| metadata.username.as_deref())
+                                        .unwrap_or_else(|| {
+                                            resource.username.as_deref().unwrap_or("")
+                                        })
                                         .to_string(),
-                                    "uri" => meta
-                                        .and_then(|m| m.uris.as_ref()?.first()?.uri.as_deref())
-                                        .unwrap_or_else(|| r.uri.as_deref().unwrap_or(""))
+                                    "uri" => metadata
+                                        .and_then(|metadata| {
+                                            metadata.uris.as_ref()?.first()?.uri.as_deref()
+                                        })
+                                        .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""))
                                         .to_string(),
                                     "folderparentid" | "folder_parent_id" => {
-                                        r.folder_parent_id.clone().unwrap_or_default()
+                                        resource.folder_parent_id.clone().unwrap_or_default()
                                     }
                                     "password" => secret
-                                        .and_then(|s| s.password.as_deref())
+                                        .and_then(|secret| secret.password.as_deref())
                                         .unwrap_or("")
                                         .to_string(),
-                                    "description" => meta
-                                        .and_then(|m| m.description.as_deref())
-                                        .or_else(|| secret.and_then(|s| s.description.as_deref()))
+                                    "description" => metadata
+                                        .and_then(|metadata| metadata.description.as_deref())
+                                        .or_else(|| {
+                                            secret.and_then(|secret| secret.description.as_deref())
+                                        })
                                         .unwrap_or("")
                                         .to_string(),
-                                    "created" => {
-                                        r.created.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
-                                    "modified" => {
-                                        r.modified.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
-                                    "expired" | "expiry" => {
-                                        r.expired.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
+                                    "created" => resource
+                                        .created
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
+                                    "modified" => resource
+                                        .modified
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
+                                    "expired" | "expiry" => resource
+                                        .expired
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
                                     _ => String::new(),
                                 })
                                 .collect()
                         })
                         .collect();
 
-                    let headers: Vec<&str> = effective_cols.iter().map(String::as_str).collect();
+                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
                     output::print_table(&headers, rows);
                 }
             }
@@ -563,35 +583,40 @@ async fn dispatch(
                 if json_output {
                     output::print_json_with_columns(&folders, column)?;
                 } else {
-                    let default_cols = ["ID", "Name", "Parent ID"];
-                    let effective_cols: Vec<String> = if column.is_empty() {
-                        default_cols.iter().map(|s| (*s).to_string()).collect()
+                    let default_columns = ["ID", "Name", "Parent ID"];
+                    let effective_columns: Vec<String> = if column.is_empty() {
+                        default_columns
+                            .iter()
+                            .map(|column| (*column).to_string())
+                            .collect()
                     } else {
                         column.clone()
                     };
                     let rows: Vec<Vec<String>> = folders
                         .iter()
-                        .map(|f| {
-                            effective_cols
+                        .map(|folder| {
+                            effective_columns
                                 .iter()
-                                .map(|c| match c.to_lowercase().as_str() {
-                                    "id" => f.id.clone(),
-                                    "name" => f.name.clone(),
+                                .map(|column| match column.to_lowercase().as_str() {
+                                    "id" => folder.id.clone(),
+                                    "name" => folder.name.clone(),
                                     "parent id" | "folderparentid" | "folder_parent_id" => {
-                                        f.folder_parent_id.clone().unwrap_or_default()
+                                        folder.folder_parent_id.clone().unwrap_or_default()
                                     }
-                                    "created" => {
-                                        f.created.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
-                                    "modified" => {
-                                        f.modified.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
+                                    "created" => folder
+                                        .created
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
+                                    "modified" => folder
+                                        .modified
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
                                     _ => String::new(),
                                 })
                                 .collect()
                         })
                         .collect();
-                    let headers: Vec<&str> = effective_cols.iter().map(String::as_str).collect();
+                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
                     output::print_table(&headers, rows);
                 }
             }
@@ -619,39 +644,44 @@ async fn dispatch(
                 if json_output {
                     output::print_json_with_columns(&users, column)?;
                 } else {
-                    let default_cols = ["ID", "Username", "First Name", "Last Name", "Role"];
-                    let effective_cols: Vec<String> = if column.is_empty() {
-                        default_cols.iter().map(|s| (*s).to_string()).collect()
+                    let default_columns = ["ID", "Username", "First Name", "Last Name", "Role"];
+                    let effective_columns: Vec<String> = if column.is_empty() {
+                        default_columns
+                            .iter()
+                            .map(|column| (*column).to_string())
+                            .collect()
                     } else {
                         column.clone()
                     };
                     let rows: Vec<Vec<String>> = users
                         .iter()
-                        .map(|u| {
-                            effective_cols
+                        .map(|user| {
+                            effective_columns
                                 .iter()
-                                .map(|c| match c.to_lowercase().as_str() {
-                                    "id" => u.id.clone(),
-                                    "username" => u.username.clone().unwrap_or_default(),
+                                .map(|column| match column.to_lowercase().as_str() {
+                                    "id" => user.id.clone(),
+                                    "username" => user.username.clone().unwrap_or_default(),
                                     "first name" | "firstname" | "first_name" => {
-                                        u.first_name().to_string()
+                                        user.first_name().to_string()
                                     }
                                     "last name" | "lastname" | "last_name" => {
-                                        u.last_name().to_string()
+                                        user.last_name().to_string()
                                     }
-                                    "role" => u.role_name().to_string(),
-                                    "created" => {
-                                        u.created.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
-                                    "modified" => {
-                                        u.modified.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
+                                    "role" => user.role_name().to_string(),
+                                    "created" => user
+                                        .created
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
+                                    "modified" => user
+                                        .modified
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
                                     _ => String::new(),
                                 })
                                 .collect()
                         })
                         .collect();
-                    let headers: Vec<&str> = effective_cols.iter().map(String::as_str).collect();
+                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
                     output::print_table(&headers, rows);
                 }
             }
@@ -675,33 +705,38 @@ async fn dispatch(
                 if json_output {
                     output::print_json_with_columns(&groups, column)?;
                 } else {
-                    let default_cols = ["ID", "Name", "Members"];
-                    let effective_cols: Vec<String> = if column.is_empty() {
-                        default_cols.iter().map(|s| (*s).to_string()).collect()
+                    let default_columns = ["ID", "Name", "Members"];
+                    let effective_columns: Vec<String> = if column.is_empty() {
+                        default_columns
+                            .iter()
+                            .map(|column| (*column).to_string())
+                            .collect()
                     } else {
                         column.clone()
                     };
                     let rows: Vec<Vec<String>> = groups
                         .iter()
-                        .map(|g| {
-                            effective_cols
+                        .map(|group| {
+                            effective_columns
                                 .iter()
-                                .map(|c| match c.to_lowercase().as_str() {
-                                    "id" => g.id.clone(),
-                                    "name" => g.name.clone(),
-                                    "members" => g.groups_users.len().to_string(),
-                                    "created" => {
-                                        g.created.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
-                                    "modified" => {
-                                        g.modified.map(|d| d.to_rfc3339()).unwrap_or_default()
-                                    }
+                                .map(|column| match column.to_lowercase().as_str() {
+                                    "id" => group.id.clone(),
+                                    "name" => group.name.clone(),
+                                    "members" => group.groups_users.len().to_string(),
+                                    "created" => group
+                                        .created
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
+                                    "modified" => group
+                                        .modified
+                                        .map(|date| date.to_rfc3339())
+                                        .unwrap_or_default(),
                                     _ => String::new(),
                                 })
                                 .collect()
                         })
                         .collect();
-                    let headers: Vec<&str> = effective_cols.iter().map(String::as_str).collect();
+                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
                     output::print_table(&headers, rows);
                 }
             }
@@ -724,9 +759,9 @@ async fn dispatch(
                 totp_issuer,
                 remove_totp,
             } => {
-                let expiry_val = parse_expiry_opt(expiry.as_ref())?;
+                let expiry_value = parse_expiry_opt(expiry.as_ref())?;
 
-                let res = passbolt_sdk::resource::update::update_resource(
+                let resource = passbolt_sdk::resource::update::update_resource(
                     client,
                     id,
                     name.as_deref(),
@@ -734,7 +769,7 @@ async fn dispatch(
                     uri.as_deref(),
                     description.as_deref(),
                     password.as_deref(),
-                    expiry_val,
+                    expiry_value,
                     totp_key.as_deref(),
                     totp_algo.as_deref(),
                     *totp_digits,
@@ -745,9 +780,9 @@ async fn dispatch(
                 .await?;
 
                 if json_output {
-                    output::print_json(&res)?;
+                    output::print_json(&resource)?;
                 } else {
-                    println!("Updated resource: {} ({})", res.name, res.id);
+                    println!("Updated resource: {} ({})", resource.name, resource.id);
                 }
             }
 

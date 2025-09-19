@@ -29,7 +29,7 @@ pub async fn update_resource<H: HttpClient>(
     new_password: Option<&str>,
     expiry: Option<Value>,
     totp_key: Option<&str>,
-    totp_algo: Option<&str>,
+    totp_algorithm: Option<&str>,
     totp_digits: Option<u32>,
     totp_period: Option<u64>,
     totp_issuer: Option<&str>,
@@ -37,7 +37,7 @@ pub async fn update_resource<H: HttpClient>(
 ) -> Result<Resource, PassboltError> {
     let needs_secret_update = new_password.is_some()
         || totp_key.is_some()
-        || totp_algo.is_some()
+        || totp_algorithm.is_some()
         || totp_digits.is_some()
         || totp_period.is_some()
         || totp_issuer.is_some()
@@ -48,22 +48,22 @@ pub async fn update_resource<H: HttpClient>(
         let resource = client.get_resource(id).await?;
 
         // Get all users who can access this resource
-        let perms = client.get_resource_permissions(id).await?;
-        let user_ids: Vec<String> = perms
+        let permissions = client.get_resource_permissions(id).await?;
+        let user_ids: Vec<String> = permissions
             .iter()
-            .filter(|p| p.aro.as_deref() == Some("User"))
-            .filter_map(|p| p.aro_foreign_key.clone())
+            .filter(|permission| permission.aro.as_deref() == Some("User"))
+            .filter_map(|permission| permission.aro_foreign_key.clone())
             .collect();
 
         // Decrypt current secret to preserve existing data
         let current_secret = client.decrypt_resource_secret(&resource).await?;
 
-        let pwd = new_password
+        let password = new_password
             .map(String::from)
             .or_else(|| current_secret.password.clone())
             .unwrap_or_default();
 
-        let desc = description
+        let description = description
             .map(String::from)
             .or_else(|| current_secret.description.clone())
             .unwrap_or_default();
@@ -76,21 +76,21 @@ pub async fn update_resource<H: HttpClient>(
             let existing = current_secret.totp.as_ref();
             Some(TotpData {
                 secret_key: totp_key.map(String::from),
-                algorithm: totp_algo
+                algorithm: totp_algorithm
                     .map(String::from)
-                    .or_else(|| existing.and_then(|t| t.algorithm.clone()))
+                    .or_else(|| existing.and_then(|totp| totp.algorithm.clone()))
                     .or_else(|| Some("SHA1".to_string())),
                 digits: totp_digits
-                    .or_else(|| existing.and_then(|t| t.digits))
+                    .or_else(|| existing.and_then(|totp| totp.digits))
                     .or(Some(6)),
                 period: totp_period
-                    .or_else(|| existing.and_then(|t| t.period))
+                    .or_else(|| existing.and_then(|totp| totp.period))
                     .or(Some(30)),
                 issuer: totp_issuer
                     .map(String::from)
-                    .or_else(|| existing.and_then(|t| t.issuer.clone())),
+                    .or_else(|| existing.and_then(|totp| totp.issuer.clone())),
             })
-        } else if totp_algo.is_some()
+        } else if totp_algorithm.is_some()
             || totp_digits.is_some()
             || totp_period.is_some()
             || totp_issuer.is_some()
@@ -98,7 +98,7 @@ pub async fn update_resource<H: HttpClient>(
             // Partial TOTP field update — merge with existing TOTP
             current_secret.totp.as_ref().map(|existing| TotpData {
                 secret_key: existing.secret_key.clone(),
-                algorithm: totp_algo
+                algorithm: totp_algorithm
                     .map(String::from)
                     .or_else(|| existing.algorithm.clone()),
                 digits: totp_digits.or(existing.digits),
@@ -113,8 +113,8 @@ pub async fn update_resource<H: HttpClient>(
         };
 
         let mut secret_data = serde_json::json!({
-            "password": pwd,
-            "description": desc
+            "password": password,
+            "description": description
         });
         if let Some(totp) = new_totp {
             secret_data["totp"] = serde_json::to_value(totp)?;
@@ -129,7 +129,7 @@ pub async fn update_resource<H: HttpClient>(
         None
     };
 
-    let expired = expiry.map(|v| if v.is_null() { Value::Null } else { v });
+    let expired = expiry.map(|value| if value.is_null() { Value::Null } else { value });
 
     let payload = UpdateResourcePayload {
         name: name.map(String::from),

@@ -23,7 +23,7 @@ pub fn read_password(prompt: &str) -> Result<SecretString> {
         let mut line = String::new();
         io::stdin()
             .read_line(&mut line)
-            .map_err(|e| anyhow::anyhow!("Cannot read stdin: {e}"))?;
+            .map_err(|error| anyhow::anyhow!("Cannot read stdin: {error}"))?;
         let trimmed = line
             .trim_end_matches('\n')
             .trim_end_matches('\r')
@@ -31,7 +31,7 @@ pub fn read_password(prompt: &str) -> Result<SecretString> {
         return Ok(SecretString::new(trimmed.into()));
     }
 
-    let pass = rpassword::prompt_password(prompt)
-        .map_err(|e| anyhow::anyhow!("Cannot read password: {e}"))?;
-    Ok(SecretString::new(pass.into()))
+    let password = rpassword::prompt_password(prompt)
+        .map_err(|error| anyhow::anyhow!("Cannot read password: {error}"))?;
+    Ok(SecretString::new(password.into()))
 }

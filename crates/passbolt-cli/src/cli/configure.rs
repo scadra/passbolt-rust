@@ -87,63 +87,63 @@ pub struct ConfigureArgs {
 }
 
 pub fn run(args: &ConfigureArgs) -> Result<()> {
-    let mut cfg = Config::load().unwrap_or_default();
+    let mut config = Config::load().unwrap_or_default();
 
-    if let Some(v) = &args.server_address {
-        cfg.server_address.clone_from(v);
+    if let Some(value) = &args.server_address {
+        config.server_address.clone_from(value);
     }
-    if let Some(v) = &args.user_private_key {
-        cfg.user_private_key.clone_from(v);
+    if let Some(value) = &args.user_private_key {
+        config.user_private_key.clone_from(value);
     }
-    if let Some(v) = &args.user_private_key_file {
-        cfg.user_private_key_file.clone_from(v);
+    if let Some(value) = &args.user_private_key_file {
+        config.user_private_key_file.clone_from(value);
     }
-    if let Some(v) = &args.user_password {
-        cfg.user_password.clone_from(v);
+    if let Some(value) = &args.user_password {
+        config.user_password.clone_from(value);
     }
-    if let Some(v) = &args.mfa_mode {
-        cfg.mfa_mode.clone_from(v);
+    if let Some(value) = &args.mfa_mode {
+        config.mfa_mode.clone_from(value);
     }
-    if let Some(v) = &args.mfa_totp_token {
-        cfg.mfa_totp_token.clone_from(v);
+    if let Some(value) = &args.mfa_totp_token {
+        config.mfa_totp_token.clone_from(value);
     }
-    if let Some(v) = args.tls_skip_verify {
-        cfg.tls_skip_verify = v;
+    if let Some(value) = args.tls_skip_verify {
+        config.tls_skip_verify = value;
     }
-    if let Some(v) = &args.timeout {
-        cfg.timeout.clone_from(v);
+    if let Some(value) = &args.timeout {
+        config.timeout.clone_from(value);
     }
-    if let Some(v) = args.workers {
-        cfg.workers = v;
+    if let Some(value) = args.workers {
+        config.workers = value;
     }
-    if let Some(v) = &args.proxy {
-        cfg.proxy.clone_from(v);
+    if let Some(value) = &args.proxy {
+        config.proxy.clone_from(value);
     }
-    if let Some(v) = &args.tls_client_cert {
-        cfg.tls_client_cert.clone_from(v);
+    if let Some(value) = &args.tls_client_cert {
+        config.tls_client_cert.clone_from(value);
     }
-    if let Some(v) = &args.tls_client_private_key {
-        cfg.tls_client_private_key.clone_from(v);
+    if let Some(value) = &args.tls_client_private_key {
+        config.tls_client_private_key.clone_from(value);
     }
     if let Some(path) = &args.tls_client_cert_file {
-        cfg.tls_client_cert = std::fs::read_to_string(path)
+        config.tls_client_cert = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read TLS client cert file: {path}"))?;
     }
     if let Some(path) = &args.tls_client_private_key_file {
-        cfg.tls_client_private_key = std::fs::read_to_string(path)
+        config.tls_client_private_key = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read TLS client private key file: {path}"))?;
     }
-    if let Some(v) = args.mfa_retrys {
-        cfg.mfa_retrys = v;
+    if let Some(value) = args.mfa_retrys {
+        config.mfa_retrys = value;
     }
-    if let Some(v) = &args.mfa_delay {
-        cfg.mfa_delay.clone_from(v);
+    if let Some(value) = &args.mfa_delay {
+        config.mfa_delay.clone_from(value);
     }
-    if let Some(v) = args.mfa_totp_offset {
-        cfg.mfa_totp_offset = v;
+    if let Some(value) = args.mfa_totp_offset {
+        config.mfa_totp_offset = value;
     }
 
-    cfg.save()?;
+    config.save()?;
 
     let path = Config::config_path()?;
     println!("Configuration saved to {}", path.display());

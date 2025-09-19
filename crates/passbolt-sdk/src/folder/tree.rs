@@ -27,9 +27,9 @@ fn build_subtree<'a>(
     };
     children
         .iter()
-        .map(|&f| FolderTreeNode {
-            children: build_subtree(Some(&f.id), children_map),
-            folder: f.clone(),
+        .map(|&folder| FolderTreeNode {
+            children: build_subtree(Some(&folder.id), children_map),
+            folder: folder.clone(),
         })
         .collect()
 }
@@ -40,15 +40,15 @@ pub fn build_folder_tree(folders: &[Folder]) -> Vec<FolderTreeNode> {
         return Vec::new();
     }
 
-    let id_set: HashSet<&str> = folders.iter().map(|f| f.id.as_str()).collect();
+    let id_set: HashSet<&str> = folders.iter().map(|folder| folder.id.as_str()).collect();
 
     let mut children_map: HashMap<Option<&str>, Vec<&Folder>> = HashMap::new();
-    for f in folders {
-        let parent = f
+    for folder in folders {
+        let parent = folder
             .folder_parent_id
             .as_deref()
-            .filter(|pid| id_set.contains(pid));
-        children_map.entry(parent).or_default().push(f);
+            .filter(|parent_id| id_set.contains(parent_id));
+        children_map.entry(parent).or_default().push(folder);
     }
 
     build_subtree(None, &children_map)
@@ -61,12 +61,13 @@ pub fn collect_subtree_ids(root_id: &str, folders: &[Folder]) -> HashSet<String>
     let mut queue = VecDeque::new();
     queue.push_back(root_id.to_owned());
     while let Some(current) = queue.pop_front() {
-        if folders.iter().any(|f| f.id == current) {
+        if folders.iter().any(|folder| folder.id == current) {
             ids.insert(current.clone());
-            for child in folders.iter().filter(|c| {
-                c.folder_parent_id
+            for child in folders.iter().filter(|candidate| {
+                candidate
+                    .folder_parent_id
                     .as_deref()
-                    .is_some_and(|pid| pid == current)
+                    .is_some_and(|parent_id| parent_id == current)
             }) {
                 queue.push_back(child.id.clone());
             }
@@ -118,7 +119,7 @@ mod tests {
         let folders = vec![make_folder("a", None), make_folder("b", None)];
         let tree = build_folder_tree(&folders);
         assert_eq!(tree.len(), 2);
-        assert!(tree.iter().all(|n| n.children.is_empty()));
+        assert!(tree.iter().all(|node| node.children.is_empty()));
     }
 
     #[test]
@@ -137,7 +138,7 @@ mod tests {
         let child1 = tree[0]
             .children
             .iter()
-            .find(|n| n.folder.id == "child1")
+            .find(|node| node.folder.id == "child1")
             .expect("child1");
         assert_eq!(child1.children.len(), 1);
         assert_eq!(child1.children[0].folder.id, "grandchild");
