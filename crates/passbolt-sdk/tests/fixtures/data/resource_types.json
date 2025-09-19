@@ -1,0 +1,27 @@
+[
+  {
+    "id": "669f8c64-242a-59fb-92fc-81f660975fd3",
+    "slug": "password-string",
+    "name": "Simple password"
+  },
+  {
+    "id": "a28a04cd-6f53-518a-967c-9963bf9cec51",
+    "slug": "password-and-description",
+    "name": "Password with description"
+  },
+  {
+    "id": "a58a1b0b-0b72-5e8b-9d3b-4b2c6f3f2a10",
+    "slug": "password-description-totp",
+    "name": "Password, description and TOTP"
+  },
+  {
+    "id": "1e1f4c1f-0c9b-5a4e-8e3b-6a3f1b2c3d40",
+    "slug": "totp",
+    "name": "Standalone TOTP"
+  },
+  {
+    "id": "a2a3c9a0-6e4d-5c7f-8b9a-1d2e3f4a5b60",
+    "slug": "v5-default",
+    "name": "Default resource"
+  }
+]
