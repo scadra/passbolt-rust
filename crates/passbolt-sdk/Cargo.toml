@@ -57,3 +57,8 @@ proptest = "1"
 rstest = "0.28"
 tokio = { version = "1", features = ["macros", "rt"] }
 wiremock = "0.6"
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+required-features = ["native"]

@@ -1,0 +1,210 @@
+// Passbolt ~ Open source password manager for teams
+// Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+//
+// Licensed under GNU Affero General Public License version 3 of the or any later version.
+// For full copyright and license information, please see the LICENSE
+// Redistributions of files must retain the above copyright notice.
+//
+// @copyright     Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+// @license       https://opensource.org/licenses/AGPL-3.0 AGPL License
+// @link          https://www.passbolt.com Passbolt(tm)
+// @since         0.1.0
+
+use passbolt_sdk::{AuthError, PassboltError, PassboltSdk, SdkConfig};
+
+use crate::common::*;
+
+async fn login_error(fake: &FakePassbolt, config: &SdkConfig) -> PassboltError {
+    match PassboltSdk::login(fake.clone(), config, None, 3).await {
+        Ok(_) => panic!("login succeeded"),
+        Err(error) => error,
+    }
+}
+
+#[tokio::test]
+async fn login_answers_the_gpgauth_challenge() {
+    let fake = FakePassbolt::new();
+
+    login_ada(&fake).await;
+
+    let login_requests = fake.requests_to("POST", "/auth/login.json");
+    assert_eq!(login_requests.len(), 2);
+    assert_eq!(
+        login_requests[0].json_body()["gpg_auth"]["keyid"],
+        ADA.fingerprint()
+    );
+    let user_token_result = login_requests[1].json_body()["gpg_auth"]["user_token_result"]
+        .as_str()
+        .unwrap();
+    assert!(
+        user_token_result.starts_with("gpgauthv1.3.0|36|"),
+        "{user_token_result}"
+    );
+}
+
+#[tokio::test]
+async fn login_keeps_the_csrf_cookie_and_the_user_id() {
+    let fake = FakePassbolt::new();
+
+    let client = login_ada(&fake).await;
+
+    assert_eq!(client.csrf_token, CSRF_TOKEN);
+    assert_eq!(client.user_id, ADA_ID);
+}
+
+#[tokio::test]
+async fn login_rejects_an_empty_server_url() {
+    let mut config = ada_config();
+    config.server_url = String::new();
+
+    let error = login_error(&FakePassbolt::new(), &config).await;
+
+    assert!(matches!(error, PassboltError::Config(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn login_rejects_an_invalid_private_key() {
+    let mut config = ada_config();
+    config.private_key_armored = "not a key".into();
+
+    let error = login_error(&FakePassbolt::new(), &config).await;
+
+    assert!(matches!(error, PassboltError::Crypto(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn login_stops_after_the_challenge_with_a_wrong_passphrase() {
+    let fake = FakePassbolt::new();
+    let mut config = ada_config();
+    config.passphrase = "wrong".to_string().into();
+
+    let error = login_error(&fake, &config).await;
+
+    assert!(
+        matches!(error, PassboltError::Auth(AuthError::LoginFailed(_))),
+        "{error:?}"
+    );
+    assert_eq!(fake.requests_to("POST", "/auth/login.json").len(), 1);
+}
+
+#[tokio::test]
+async fn login_reports_an_unknown_key() {
+    let mut config = ada_config();
+    config.private_key_armored = BETTY.private.into();
+    config.passphrase = BETTY.passphrase.to_string().into();
+
+    let error = login_error(&FakePassbolt::new(), &config).await;
+
+    let PassboltError::Auth(AuthError::LoginFailed(message)) = error else {
+        panic!("{error:?}")
+    };
+    assert!(
+        message.contains("400") && message.contains("no user associated"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn server_identity_mismatch_aborts_before_sending_credentials() {
+    let fake = FakePassbolt::new();
+    fake.on("GET", "/auth/verify.json", data::auth_verify(&SERVER));
+    let mut config = ada_config();
+    config.server_verify_enc_token = BETTY.fingerprint();
+
+    let error = login_error(&fake, &config).await;
+
+    assert!(
+        matches!(
+            error,
+            PassboltError::Auth(AuthError::ServerIdentityMismatch(_))
+        ),
+        "{error:?}"
+    );
+    assert!(fake.requests_to("POST", "/auth/login.json").is_empty());
+}
+
+#[tokio::test]
+async fn logout_sends_the_csrf_token() {
+    let fake = FakePassbolt::new();
+    let client = login_ada(&fake).await;
+
+    client.logout().await;
+
+    let logout_requests = fake.requests_to("POST", "/auth/logout.json");
+    assert_eq!(logout_requests[0].header("X-CSRF-Token"), Some(CSRF_TOKEN));
+}
+
+#[tokio::test]
+#[ignore = "MFA-2: the SDK expects MFA as a 403 on login; the server asks for it on the next request"]
+async fn login_completes_mfa() {
+    let fake = FakePassbolt::new();
+    fake.require_mfa("123456");
+    let totp_codes = FixedTotpCodes::new(&["123456"]);
+
+    let client = PassboltSdk::login(fake.clone(), &ada_config(), Some(&totp_codes), 3)
+        .await
+        .unwrap();
+
+    assert_eq!(client.user_id, ADA_ID);
+    assert_eq!(
+        fake.body_of("POST", "/mfa/verify/totp.json")["totp"],
+        "123456"
+    );
+}
+
+#[tokio::test]
+#[ignore = "MFA-2: the SDK expects MFA as a 403 on login; the server asks for it on the next request"]
+async fn login_without_mfa_provider_reports_mfa_required() {
+    let fake = FakePassbolt::new();
+    fake.require_mfa("123456");
+
+    let error = login_error(&fake, &ada_config()).await;
+
+    assert!(
+        matches!(error, PassboltError::Auth(AuthError::MfaRequired)),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "SEC-3: the post-login key cross-check swallows every error"]
+async fn login_rejects_a_server_holding_another_public_key() {
+    let fake = FakePassbolt::new();
+    fake.on("GET", "/users/me.json", data::user_with_key("ada", &BETTY));
+
+    let error = login_error(&fake, &ada_config()).await;
+
+    assert!(
+        matches!(error, PassboltError::Auth(AuthError::KeyCrossCheckFailed)),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "SEC-6: the decrypted challenge is sent back without checking the GPGAuth token format"]
+async fn login_refuses_to_send_back_a_non_token_challenge() {
+    let fake = FakePassbolt::new();
+    fake.send_challenge("any plaintext the server wants decrypted");
+
+    let error = login_error(&fake, &ada_config()).await;
+
+    assert!(
+        matches!(error, PassboltError::Auth(AuthError::LoginFailed(_))),
+        "{error:?}"
+    );
+    assert_eq!(fake.requests_to("POST", "/auth/login.json").len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "SEC-7: a session without CSRF token is accepted"]
+async fn login_rejects_a_session_without_csrf_token() {
+    let fake = FakePassbolt::new();
+    fake.without_csrf_cookie();
+
+    let error = login_error(&fake, &ada_config()).await;
+
+    assert!(
+        matches!(error, PassboltError::Auth(AuthError::LoginFailed(_))),
+        "{error:?}"
+    );
+}
