@@ -55,18 +55,18 @@ async fn fetch_metadata_key<H: HttpClient>(
     passphrase: &str,
 ) -> Result<Option<pgp::SignedSecretKey>, PassboltError> {
     let url = format!("{base_url}/metadata/keys.json?contain[metadata_private_keys]=1");
-    let resp = http.get(&url, &[]).await?;
+    let response = http.get(&url, &[]).await?;
 
-    let body: Value = serde_json::from_slice(&resp.body)?;
+    let body: Value = serde_json::from_slice(&response.body)?;
 
-    if resp.status >= 400 {
-        let msg = body
+    if response.status >= 400 {
+        let message = body
             .pointer("/header/message")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("Unknown error");
         return Err(ApiError {
-            status: resp.status,
-            message: msg.to_string(),
+            status: response.status,
+            message: message.to_string(),
             validation_errors: None,
         }
         .into());
@@ -75,17 +75,17 @@ async fn fetch_metadata_key<H: HttpClient>(
     let data = body.get("body").cloned().unwrap_or(body);
     let keys: Vec<MetadataKey> = serde_json::from_value(data)?;
 
-    for mk in &keys {
-        for share in &mk.metadata_private_keys {
+    for metadata_key in &keys {
+        for share in &metadata_key.metadata_private_keys {
             if share.user_id.as_deref() == Some(user_id) {
                 let plaintext = crypto::decrypt_message(&share.data, private_key, passphrase)
-                    .map_err(|e| {
+                    .map_err(|error| {
                         CryptoError::Decrypt(format!(
-                            "Failed to decrypt metadata private key share: {e}"
+                            "Failed to decrypt metadata private key share: {error}"
                         ))
                     })?;
-                let armored = String::from_utf8(plaintext).map_err(|e| {
-                    PassboltError::Other(format!("Metadata key is not valid UTF-8: {e}"))
+                let armored = String::from_utf8(plaintext).map_err(|error| {
+                    PassboltError::Other(format!("Metadata key is not valid UTF-8: {error}"))
                 })?;
                 let key = crypto::parse_private_key(&armored)?;
                 return Ok(Some(key.key.clone()));
@@ -100,29 +100,31 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// Create a new SDK client with a pre-built HTTP backend and authenticate.
     pub async fn login(
         http: H,
-        sdk_cfg: &SdkConfig,
+        sdk_config: &SdkConfig,
         mfa_provider: Option<&dyn MfaProvider>,
         max_attempts: u32,
     ) -> Result<Self, PassboltError> {
-        if sdk_cfg.server_url.is_empty() {
+        if sdk_config.server_url.is_empty() {
             return Err(PassboltError::Config(
                 "server_address is not configured".into(),
             ));
         }
 
-        let private_key = crypto::parse_private_key(&sdk_cfg.private_key_armored)?;
-        let passphrase = sdk_cfg.passphrase.clone();
-        let base_url = sdk_cfg.server_url.trim_end_matches('/').to_string();
+        let private_key = crypto::parse_private_key(&sdk_config.private_key_armored)?;
+        let passphrase = sdk_config.passphrase.clone();
+        let base_url = sdk_config.server_url.trim_end_matches('/').to_string();
 
         // Pre-login server identity check
-        if !sdk_cfg.server_verify_enc_token.is_empty() || !sdk_cfg.server_verify_token.is_empty() {
+        if !sdk_config.server_verify_enc_token.is_empty()
+            || !sdk_config.server_verify_token.is_empty()
+        {
             auth::check_server_identity(
                 &http,
                 &base_url,
                 &private_key,
                 passphrase.expose_secret(),
-                &sdk_cfg.server_verify_enc_token,
-                &sdk_cfg.server_verify_token,
+                &sdk_config.server_verify_enc_token,
+                &sdk_config.server_verify_token,
             )
             .await?;
         }
@@ -160,28 +162,28 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     /// Fetch current user ID via GET /users/me.json (post-login verify).
     async fn fetch_user_id(&self) -> Result<String, PassboltError> {
-        let me: User = self
-            .get("/users/me.json?contain[gpgkey]=1")
-            .await
-            .map_err(|e| {
-                PassboltError::from(AuthError::LoginFailed(format!(
-                    "Failed to fetch current user info: {e}"
-                )))
-            })?;
+        let current_user: User =
+            self.get("/users/me.json?contain[gpgkey]=1")
+                .await
+                .map_err(|error| {
+                    PassboltError::from(AuthError::LoginFailed(format!(
+                        "Failed to fetch current user info: {error}"
+                    )))
+                })?;
 
         // Cross-check: encrypt random bytes with server's copy of our public key,
         // then decrypt with our private key.
-        if let Some(gpg_key) = &me.gpg_key {
+        if let Some(gpg_key) = &current_user.gpg_key {
             if let Some(armored) = &gpg_key.armored_key {
-                if let Ok(pub_key) = crypto::parse_public_key(armored) {
+                if let Ok(public_key) = crypto::parse_public_key(armored) {
                     let probe = b"passbolt-key-check";
-                    if let Ok(enc) = crypto::encrypt_message(probe, &[&pub_key]) {
-                        if let Ok(dec) = crypto::decrypt_message(
-                            &enc,
+                    if let Ok(encrypted_probe) = crypto::encrypt_message(probe, &[&public_key]) {
+                        if let Ok(decrypted_probe) = crypto::decrypt_message(
+                            &encrypted_probe,
                             &self.private_key.key,
                             self.passphrase.expose_secret(),
                         ) {
-                            if dec != probe {
+                            if decrypted_probe != probe {
                                 return Err(AuthError::KeyCrossCheckFailed.into());
                             }
                         }
@@ -190,14 +192,14 @@ impl<H: HttpClient> PassboltSdk<H> {
             }
         }
 
-        Ok(me.id)
+        Ok(current_user.id)
     }
 
     /// Terminate the server-side session.
     pub async fn logout(&self) {
         let url = format!("{}/auth/logout.json", self.base_url);
-        let (csrf_key, csrf_val) = self.csrf_header();
-        let _ = self.http.post(&url, &[(csrf_key, csrf_val)], &[]).await;
+        let (csrf_key, csrf_value) = self.csrf_header();
+        let _ = self.http.post(&url, &[(csrf_key, csrf_value)], &[]).await;
     }
 
     /// Check if the current session is still authenticated.
@@ -206,8 +208,8 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// Callers can use this for keep-alive or session refresh logic.
     pub async fn check_auth_status(&self) -> Result<bool, PassboltError> {
         let url = format!("{}/auth/is-authenticated.json", self.base_url);
-        let resp = self.http.get(&url, &[]).await?;
-        Ok(resp.status < 400)
+        let response = self.http.get(&url, &[]).await?;
+        Ok(response.status < 400)
     }
 
     // ── Internal HTTP helpers ─────────────────────────────────────────────────
@@ -218,8 +220,8 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let resp = self.http.get(&url, &[]).await?;
-        self.parse_response(&resp)
+        let response = self.http.get(&url, &[]).await?;
+        self.parse_response(&response)
     }
 
     async fn get_with_query<T, K, V>(
@@ -235,29 +237,29 @@ impl<H: HttpClient> PassboltSdk<H> {
         // Build URL with query string
         let mut url = format!("{}{path}", self.base_url);
         if !params.is_empty() {
-            let sep = if url.contains('?') { '&' } else { '?' };
-            url.push(sep);
-            let qs: Vec<String> = params
+            let separator = if url.contains('?') { '&' } else { '?' };
+            url.push(separator);
+            let query_pairs: Vec<String> = params
                 .iter()
-                .map(|(k, v)| {
+                .map(|(key, value)| {
                     format!(
                         "{}={}",
                         percent_encoding::utf8_percent_encode(
-                            k.as_ref(),
+                            key.as_ref(),
                             percent_encoding::NON_ALPHANUMERIC,
                         ),
                         percent_encoding::utf8_percent_encode(
-                            v.as_ref(),
+                            value.as_ref(),
                             percent_encoding::NON_ALPHANUMERIC,
                         ),
                     )
                 })
                 .collect();
-            url.push_str(&qs.join("&"));
+            url.push_str(&query_pairs.join("&"));
         }
 
-        let resp = self.http.get(&url, &[]).await?;
-        self.parse_response(&resp)
+        let response = self.http.get(&url, &[]).await?;
+        self.parse_response(&response)
     }
 
     async fn post<T: DeserializeOwned>(
@@ -266,13 +268,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_val) = self.csrf_header();
+        let (csrf_key, csrf_value) = self.csrf_header();
         let json_body = serde_json::to_vec(body)?;
-        let resp = self
+        let response = self
             .http
-            .post(&url, &[(csrf_key, csrf_val)], &json_body)
+            .post(&url, &[(csrf_key, csrf_value)], &json_body)
             .await?;
-        self.parse_response(&resp)
+        self.parse_response(&response)
     }
 
     async fn put_request<T: DeserializeOwned>(
@@ -281,29 +283,29 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_val) = self.csrf_header();
+        let (csrf_key, csrf_value) = self.csrf_header();
         let json_body = serde_json::to_vec(body)?;
-        let resp = self
+        let response = self
             .http
-            .put(&url, &[(csrf_key, csrf_val)], &json_body)
+            .put(&url, &[(csrf_key, csrf_value)], &json_body)
             .await?;
-        self.parse_response(&resp)
+        self.parse_response(&response)
     }
 
     async fn delete_request(&self, path: &str) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_val) = self.csrf_header();
-        let resp = self.http.delete(&url, &[(csrf_key, csrf_val)]).await?;
+        let (csrf_key, csrf_value) = self.csrf_header();
+        let response = self.http.delete(&url, &[(csrf_key, csrf_value)]).await?;
 
-        if resp.status >= 400 {
-            let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-            let msg = body
+        if response.status >= 400 {
+            let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+            let message = body
                 .pointer("/header/message")
-                .and_then(|v| v.as_str())
+                .and_then(|value| value.as_str())
                 .unwrap_or("Unknown error");
             return Err(ApiError {
-                status: resp.status,
-                message: format!("DELETE {path} failed: {msg}"),
+                status: response.status,
+                message: format!("DELETE {path} failed: {message}"),
                 validation_errors: None,
             }
             .into());
@@ -317,22 +319,22 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_val) = self.csrf_header();
+        let (csrf_key, csrf_value) = self.csrf_header();
         let json_body = serde_json::to_vec(body)?;
-        let resp = self
+        let response = self
             .http
-            .delete_with_body(&url, &[(csrf_key, csrf_val)], &json_body)
+            .delete_with_body(&url, &[(csrf_key, csrf_value)], &json_body)
             .await?;
 
-        if resp.status >= 400 {
-            let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-            let msg = body
+        if response.status >= 400 {
+            let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+            let message = body
                 .pointer("/header/message")
-                .and_then(|v| v.as_str())
+                .and_then(|value| value.as_str())
                 .unwrap_or("Unknown error");
             return Err(ApiError {
-                status: resp.status,
-                message: format!("DELETE {path} failed: {msg}"),
+                status: response.status,
+                message: format!("DELETE {path} failed: {message}"),
                 validation_errors: None,
             }
             .into());
@@ -341,18 +343,21 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     #[allow(clippy::unused_self)] // keeps API consistent; may use self for logging later
-    fn parse_response<T: DeserializeOwned>(&self, resp: &HttpResponse) -> Result<T, PassboltError> {
-        let body: Value = serde_json::from_slice(&resp.body)?;
+    fn parse_response<T: DeserializeOwned>(
+        &self,
+        response: &HttpResponse,
+    ) -> Result<T, PassboltError> {
+        let body: Value = serde_json::from_slice(&response.body)?;
 
-        if resp.status >= 400 {
-            let msg = body
+        if response.status >= 400 {
+            let message = body
                 .pointer("/header/message")
-                .and_then(|v| v.as_str())
+                .and_then(|value| value.as_str())
                 .unwrap_or("Unknown error");
             let validation_errors = body.get("body").cloned();
             return Err(ApiError {
-                status: resp.status,
-                message: msg.to_string(),
+                status: response.status,
+                message: message.to_string(),
                 validation_errors,
             }
             .into());
@@ -394,17 +399,17 @@ impl<H: HttpClient> PassboltSdk<H> {
             page_params.push(("page", page.to_string()));
 
             let url = self.build_query_url(path, &page_params);
-            let resp = self.http.get(&url, &[]).await?;
-            let body: Value = serde_json::from_slice(&resp.body)?;
+            let response = self.http.get(&url, &[]).await?;
+            let body: Value = serde_json::from_slice(&response.body)?;
 
-            if resp.status >= 400 {
-                let msg = body
+            if response.status >= 400 {
+                let message = body
                     .pointer("/header/message")
-                    .and_then(|v| v.as_str())
+                    .and_then(|value| value.as_str())
                     .unwrap_or("Unknown error");
                 return Err(ApiError {
-                    status: resp.status,
-                    message: msg.to_string(),
+                    status: response.status,
+                    message: message.to_string(),
                     validation_errors: None,
                 }
                 .into());
@@ -418,7 +423,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             // Check pagination info from response header
             let pagination_info = body
                 .pointer("/header/pagination")
-                .and_then(|v| serde_json::from_value::<PaginationInfo>(v.clone()).ok());
+                .and_then(|value| serde_json::from_value::<PaginationInfo>(value.clone()).ok());
 
             if let Some(info) = pagination_info {
                 let limit = info.limit.unwrap_or(20);
@@ -441,25 +446,25 @@ impl<H: HttpClient> PassboltSdk<H> {
     ) -> String {
         let mut url = format!("{}{path}", self.base_url);
         if !params.is_empty() {
-            let sep = if url.contains('?') { '&' } else { '?' };
-            url.push(sep);
-            let qs: Vec<String> = params
+            let separator = if url.contains('?') { '&' } else { '?' };
+            url.push(separator);
+            let query_pairs: Vec<String> = params
                 .iter()
-                .map(|(k, v)| {
+                .map(|(key, value)| {
                     format!(
                         "{}={}",
                         percent_encoding::utf8_percent_encode(
-                            k.as_ref(),
+                            key.as_ref(),
                             percent_encoding::NON_ALPHANUMERIC,
                         ),
                         percent_encoding::utf8_percent_encode(
-                            v.as_ref(),
+                            value.as_ref(),
                             percent_encoding::NON_ALPHANUMERIC,
                         ),
                     )
                 })
                 .collect();
-            url.push_str(&qs.join("&"));
+            url.push_str(&query_pairs.join("&"));
         }
         url
     }
@@ -468,8 +473,8 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     /// Fetch the org-wide metadata private key and cache it for the session.
     pub async fn ensure_metadata_key(&self) -> Result<Option<&SignedSecretKey>, PassboltError> {
-        if let Some(val) = self.metadata_private_key.get() {
-            return Ok(val.as_ref());
+        if let Some(cached_key) = self.metadata_private_key.get() {
+            return Ok(cached_key.as_ref());
         }
 
         let result = fetch_metadata_key(
@@ -490,33 +495,35 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// Decrypt the PGP-armored `metadata` field of a v5 resource.
     pub async fn decrypt_resource_metadata(
         &self,
-        r: &Resource,
+        resource: &Resource,
     ) -> Result<Option<ResourceMetadata>, PassboltError> {
-        let Some(armored) = r.armored_metadata() else {
+        let Some(armored) = resource.armored_metadata() else {
             return Ok(None);
         };
 
-        let plaintext = match r.metadata_key_type.as_deref() {
+        let plaintext = match resource.metadata_key_type.as_deref() {
             Some("user_key") => crypto::decrypt_message(
                 armored,
                 &self.private_key.key,
                 self.passphrase.expose_secret(),
             )
-            .map_err(|e| CryptoError::Decrypt(format!("resource metadata (user_key): {e}")))?,
+            .map_err(|error| {
+                CryptoError::Decrypt(format!("resource metadata (user_key): {error}"))
+            })?,
             _ => match self.ensure_metadata_key().await? {
                 Some(key) => crypto::decrypt_message(armored, key, self.passphrase.expose_secret())
-                    .map_err(|e| {
-                        CryptoError::Decrypt(format!("resource metadata (shared_key): {e}"))
+                    .map_err(|error| {
+                        CryptoError::Decrypt(format!("resource metadata (shared_key): {error}"))
                     })?,
                 None => return Ok(None),
             },
         };
 
-        let text = String::from_utf8(plaintext).map_err(|e| {
-            PassboltError::Other(format!("Resource metadata is not valid UTF-8: {e}"))
+        let text = String::from_utf8(plaintext).map_err(|error| {
+            PassboltError::Other(format!("Resource metadata is not valid UTF-8: {error}"))
         })?;
-        let meta = serde_json::from_str::<ResourceMetadata>(&text)?;
-        Ok(Some(meta))
+        let metadata = serde_json::from_str::<ResourceMetadata>(&text)?;
+        Ok(Some(metadata))
     }
 
     // ── Batch decrypt (native only — requires tokio JoinSet) ────────────────
@@ -538,51 +545,52 @@ impl<H: HttpClient> PassboltSdk<H> {
             workers
         }
         .max(1);
-        let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let pgp_key = Arc::new(self.private_key.key.clone());
         let passphrase = Arc::new(self.passphrase.clone());
 
-        let mut set: JoinSet<(String, SecretData)> = JoinSet::new();
+        let mut tasks: JoinSet<(String, SecretData)> = JoinSet::new();
 
-        for r in resources {
-            let encrypted = r
+        for resource in resources {
+            let encrypted = resource
                 .secrets
                 .first()
-                .and_then(|s| s.data.clone())
+                .and_then(|secret| secret.data.clone())
                 .unwrap_or_default();
-            let id = r.id.clone();
+            let id = resource.id.clone();
             let key = Arc::clone(&pgp_key);
-            let pass = Arc::clone(&passphrase);
-            let permit = Arc::clone(&sem)
+            let task_passphrase = Arc::clone(&passphrase);
+            let permit = Arc::clone(&semaphore)
                 .acquire_owned()
                 .await
-                .map_err(|e| PassboltError::Other(format!("Semaphore error: {e}")))?;
+                .map_err(|error| PassboltError::Other(format!("Semaphore error: {error}")))?;
 
-            set.spawn_blocking(move || {
+            tasks.spawn_blocking(move || {
                 let _permit = permit;
                 let secret = if encrypted.is_empty() {
                     SecretData::default()
                 } else {
-                    crypto::decrypt_message(&encrypted, &key, pass.expose_secret()).map_or_else(
-                        |_| SecretData::default(),
-                        |plaintext| {
-                            let text = String::from_utf8(plaintext).unwrap_or_default();
-                            serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| {
-                                SecretData {
-                                    password: Some(text.clone()),
-                                    raw: Some(text),
-                                    ..Default::default()
-                                }
-                            })
-                        },
-                    )
+                    crypto::decrypt_message(&encrypted, &key, task_passphrase.expose_secret())
+                        .map_or_else(
+                            |_| SecretData::default(),
+                            |plaintext| {
+                                let text = String::from_utf8(plaintext).unwrap_or_default();
+                                serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| {
+                                    SecretData {
+                                        password: Some(text.clone()),
+                                        raw: Some(text),
+                                        ..Default::default()
+                                    }
+                                })
+                            },
+                        )
                 };
                 (id, secret)
             });
         }
 
         let mut secrets = HashMap::new();
-        while let Some(result) = set.join_next().await {
+        while let Some(result) = tasks.join_next().await {
             if let Ok((id, secret)) = result {
                 secrets.insert(id, secret);
             }
@@ -597,10 +605,10 @@ impl<H: HttpClient> PassboltSdk<H> {
         resources: &[Resource],
     ) -> HashMap<String, ResourceMetadata> {
         let mut metadatas = HashMap::new();
-        for r in resources {
-            if r.is_v5() {
-                if let Ok(Some(meta)) = self.decrypt_resource_metadata(r).await {
-                    metadatas.insert(r.id.clone(), meta);
+        for resource in resources {
+            if resource.is_v5() {
+                if let Ok(Some(metadata)) = self.decrypt_resource_metadata(resource).await {
+                    metadatas.insert(resource.id.clone(), metadata);
                 }
             }
         }
@@ -621,31 +629,34 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── Resources ──────────────────────────────────────────────────────────────
 
-    pub async fn get_resources(&self, opts: ResourceQuery) -> Result<Vec<Resource>, PassboltError> {
+    pub async fn get_resources(
+        &self,
+        options: ResourceQuery,
+    ) -> Result<Vec<Resource>, PassboltError> {
         let mut params: Vec<(&str, String)> = vec![
             ("contain[permission]", "1".into()),
             ("contain[secret]", "1".into()),
             ("contain[favorite]", "1".into()),
         ];
 
-        for s in opts.group_ids {
-            params.push(("filter[is-shared-with-group][]", s));
+        for group_id in options.group_ids {
+            params.push(("filter[is-shared-with-group][]", group_id));
         }
-        for s in opts.folder_ids {
-            params.push(("filter[has-parent][]", s));
+        for folder_id in options.folder_ids {
+            params.push(("filter[has-parent][]", folder_id));
         }
 
-        if opts.favorites_only {
+        if options.favorites_only {
             params.push(("filter[is-favorite]", "1".into()));
         }
-        if opts.owned_by_me {
+        if options.owned_by_me {
             params.push(("filter[is-owned-by-me]", "1".into()));
         }
-        if let Some(s) = opts.search {
-            params.push(("filter[search]", s));
+        if let Some(search) = options.search {
+            params.push(("filter[search]", search));
         }
 
-        self.get_paginated("/resources.json", &params, &opts.pagination)
+        self.get_paginated("/resources.json", &params, &options.pagination)
             .await
     }
 
@@ -690,15 +701,15 @@ impl<H: HttpClient> PassboltSdk<H> {
         &self,
         resource: &Resource,
     ) -> Result<SecretData, PassboltError> {
-        let secret_data = if let Some(s) = resource.secrets.first() {
-            s.data.clone().unwrap_or_default()
+        let secret_data = if let Some(secret) = resource.secrets.first() {
+            secret.data.clone().unwrap_or_default()
         } else {
             let secrets: Vec<Secret> = self
                 .get(&format!("/secrets/resource/{}.json", resource.id))
                 .await?;
             secrets
                 .first()
-                .and_then(|s| s.data.clone())
+                .and_then(|secret| secret.data.clone())
                 .unwrap_or_default()
         };
 
@@ -711,10 +722,10 @@ impl<H: HttpClient> PassboltSdk<H> {
             &self.private_key.key,
             self.passphrase.expose_secret(),
         )
-        .map_err(|e| CryptoError::Decrypt(format!("resource secret: {e}")))?;
+        .map_err(|error| CryptoError::Decrypt(format!("resource secret: {error}")))?;
 
         let text = String::from_utf8(plaintext)
-            .map_err(|e| PassboltError::Other(format!("Secret is not valid UTF-8: {e}")))?;
+            .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))?;
 
         Ok(
             serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| SecretData {
@@ -733,21 +744,21 @@ impl<H: HttpClient> PassboltSdk<H> {
     ) -> Result<Vec<SecretPayload>, PassboltError> {
         let mut payloads = Vec::new();
 
-        for uid in user_ids {
+        for user_id in user_ids {
             let user: User = self
-                .get(&format!("/users/{uid}.json?contain[gpgkey]=1"))
+                .get(&format!("/users/{user_id}.json?contain[gpgkey]=1"))
                 .await?;
             let armored_key = user
                 .gpg_key
                 .as_ref()
-                .and_then(|k| k.armored_key.as_deref())
-                .ok_or_else(|| PassboltError::NotFound(format!("User {uid} has no GPG key")))?;
+                .and_then(|gpg_key| gpg_key.armored_key.as_deref())
+                .ok_or_else(|| PassboltError::NotFound(format!("User {user_id} has no GPG key")))?;
 
-            let pub_key = crypto::parse_public_key(armored_key)?;
-            let encrypted = crypto::encrypt_message(secret_json.as_bytes(), &[&pub_key])?;
+            let public_key = crypto::parse_public_key(armored_key)?;
+            let encrypted = crypto::encrypt_message(secret_json.as_bytes(), &[&public_key])?;
 
             payloads.push(SecretPayload {
-                user_id: uid.clone(),
+                user_id: user_id.clone(),
                 data: encrypted,
             });
         }
@@ -757,20 +768,20 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── Folders ───────────────────────────────────────────────────────────────
 
-    pub async fn get_folders(&self, opts: FolderQuery) -> Result<Vec<Folder>, PassboltError> {
+    pub async fn get_folders(&self, options: FolderQuery) -> Result<Vec<Folder>, PassboltError> {
         let mut params: Vec<(&str, String)> = vec![("contain[permissions]", "1".into())];
 
-        if let Some(s) = opts.search {
-            params.push(("filter[search]", s));
+        if let Some(search) = options.search {
+            params.push(("filter[search]", search));
         }
-        if let Some(g) = opts.group_id {
-            params.push(("filter[is-shared-with-group]", g));
+        if let Some(group_id) = options.group_id {
+            params.push(("filter[is-shared-with-group]", group_id));
         }
-        if let Some(f) = opts.parent_folder_id {
-            params.push(("filter[has-parent]", f));
+        if let Some(parent_folder_id) = options.parent_folder_id {
+            params.push(("filter[has-parent]", parent_folder_id));
         }
 
-        self.get_paginated("/folders.json", &params, &opts.pagination)
+        self.get_paginated("/folders.json", &params, &options.pagination)
             .await
     }
 
@@ -807,27 +818,27 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── Users ─────────────────────────────────────────────────────────────────
 
-    pub async fn get_users(&self, opts: UserQuery) -> Result<Vec<User>, PassboltError> {
+    pub async fn get_users(&self, options: UserQuery) -> Result<Vec<User>, PassboltError> {
         let mut params: Vec<(&str, String)> = vec![
             ("contain[role]", "1".into()),
             ("contain[gpgkey]", "1".into()),
             ("contain[groups_users]", "1".into()),
         ];
 
-        if let Some(s) = opts.search {
-            params.push(("filter[search]", s));
+        if let Some(search) = options.search {
+            params.push(("filter[search]", search));
         }
-        if let Some(g) = opts.group_id {
-            params.push(("filter[is-in-group]", g));
+        if let Some(group_id) = options.group_id {
+            params.push(("filter[is-in-group]", group_id));
         }
-        if let Some(r) = opts.resource_id {
-            params.push(("filter[has-access]", r));
+        if let Some(resource_id) = options.resource_id {
+            params.push(("filter[has-access]", resource_id));
         }
-        if opts.admin_only {
+        if options.admin_only {
             params.push(("filter[is-admin]", "1".into()));
         }
 
-        self.get_paginated("/users.json", &params, &opts.pagination)
+        self.get_paginated("/users.json", &params, &options.pagination)
             .await
     }
 
@@ -863,17 +874,17 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── Groups ────────────────────────────────────────────────────────────────
 
-    pub async fn get_groups(&self, opts: GroupQuery) -> Result<Vec<Group>, PassboltError> {
+    pub async fn get_groups(&self, options: GroupQuery) -> Result<Vec<Group>, PassboltError> {
         let mut params: Vec<(&str, String)> = vec![("contain[groups_users]", "1".into())];
 
-        if let Some(u) = opts.user_id {
-            params.push(("filter[has-users]", u));
+        if let Some(user_id) = options.user_id {
+            params.push(("filter[has-users]", user_id));
         }
-        if let Some(m) = opts.manager_id {
-            params.push(("filter[has-managers]", m));
+        if let Some(manager_id) = options.manager_id {
+            params.push(("filter[has-managers]", manager_id));
         }
 
-        self.get_paginated("/groups.json", &params, &opts.pagination)
+        self.get_paginated("/groups.json", &params, &options.pagination)
             .await
     }
 
@@ -945,8 +956,8 @@ impl<H: HttpClient> PassboltSdk<H> {
         let roles: Vec<serde_json::Value> = self.get("/roles.json").await?;
         roles
             .iter()
-            .find(|r| r["name"].as_str() == Some(role_name))
-            .and_then(|r| r["id"].as_str())
+            .find(|role| role["name"].as_str() == Some(role_name))
+            .and_then(|role| role["id"].as_str())
             .map(str::to_owned)
             .ok_or_else(|| PassboltError::NotFound(format!("Role not found: {role_name}")))
     }
@@ -958,7 +969,10 @@ impl<H: HttpClient> PassboltSdk<H> {
         slug: &str,
     ) -> Result<Option<String>, PassboltError> {
         let types: Vec<ResourceType> = self.get("/resource-types.json").await?;
-        Ok(types.into_iter().find(|t| t.slug == slug).map(|t| t.id))
+        Ok(types
+            .into_iter()
+            .find(|resource_type| resource_type.slug == slug)
+            .map(|resource_type| resource_type.id))
     }
 
     // ── Move ──────────────────────────────────────────────────────────────────
@@ -1054,7 +1068,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     ) -> Result<Vec<Tag>, PassboltError> {
         let body: Value = tags
             .iter()
-            .map(|s| serde_json::json!({ "slug": s }))
+            .map(|slug| serde_json::json!({ "slug": slug }))
             .collect::<Vec<_>>()
             .into();
         self.put_request(&format!("/resources/{resource_id}/tags.json"), &body)
@@ -1090,8 +1104,8 @@ impl<H: HttpClient> PassboltSdk<H> {
         parent_id: Option<&str>,
     ) -> Result<Comment, PassboltError> {
         let mut body = serde_json::json!({ "content": content });
-        if let Some(pid) = parent_id {
-            body["parent_id"] = serde_json::json!(pid);
+        if let Some(parent_id) = parent_id {
+            body["parent_id"] = serde_json::json!(parent_id);
         }
         self.post(&format!("/comments/resource/{resource_id}.json"), &body)
             .await
@@ -1209,14 +1223,14 @@ impl<H: HttpClient> PassboltSdk<H> {
         if is_personal {
             // Encrypt with user's own public key (sign the unsigned key first)
             let mut rng = rand::thread_rng();
-            let unsigned_pub = self.private_key.key.public_key();
-            let signed_pub = unsigned_pub
+            let unsigned_public_key = self.private_key.key.public_key();
+            let signed_public_key = unsigned_public_key
                 .sign(&mut rng, &self.private_key.key, || {
                     self.passphrase.expose_secret().to_string()
                 })
-                .map_err(|e| CryptoError::Encrypt(format!("sign public key: {e}")))?;
-            let armored = crypto::encrypt_message(json.as_bytes(), &[&signed_pub])
-                .map_err(|e| CryptoError::Encrypt(format!("metadata (user_key): {e}")))?;
+                .map_err(|error| CryptoError::Encrypt(format!("sign public key: {error}")))?;
+            let armored = crypto::encrypt_message(json.as_bytes(), &[&signed_public_key])
+                .map_err(|error| CryptoError::Encrypt(format!("metadata (user_key): {error}")))?;
             Ok((armored, None))
         } else {
             // Requires a shared metadata key — caller must ensure it's available
@@ -1236,7 +1250,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     ) -> Result<(String, String), PassboltError> {
         let json = serde_json::to_string(metadata)?;
         let armored = crypto::encrypt_message(json.as_bytes(), &[public_key])
-            .map_err(|e| CryptoError::Encrypt(format!("metadata (shared_key): {e}")))?;
+            .map_err(|error| CryptoError::Encrypt(format!("metadata (shared_key): {error}")))?;
         Ok((armored, metadata_key_id.to_string()))
     }
 }

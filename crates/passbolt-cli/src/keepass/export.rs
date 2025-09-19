@@ -63,7 +63,7 @@ pub async fn export_keepass(
         // Only keep folders that belong to the subtree
         let folders: Vec<Folder> = all_folders
             .into_iter()
-            .filter(|f| subtree_ids.contains(&f.id))
+            .filter(|folder| subtree_ids.contains(&folder.id))
             .collect();
         (resources, folders)
     } else {
@@ -82,18 +82,18 @@ pub async fn export_keepass(
         workers
     }
     .max(1);
-    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
     let total = resources.len() as u64;
-    let pb = Arc::new(ProgressBar::new(total));
-    pb.set_style(
+    let progress_bar = Arc::new(ProgressBar::new(total));
+    progress_bar.set_style(
         ProgressStyle::with_template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
         )
         .unwrap_or_else(|_| ProgressStyle::default_bar())
         .progress_chars("#>-"),
     );
-    pb.set_message("Decrypting secrets...");
+    progress_bar.set_message("Decrypting secrets...");
 
     // Share the crypto material across blocking tasks via Arc
     let pgp_key = client.pgp_key_arc();
@@ -104,53 +104,55 @@ pub async fn export_keepass(
         client
             .ensure_metadata_key()
             .await
-            .unwrap_or_else(|e| {
-                eprintln!("[warn] Could not fetch metadata key: {e}");
+            .unwrap_or_else(|error| {
+                eprintln!("[warn] Could not fetch metadata key: {error}");
                 None
             })
             .cloned(),
     );
 
     // Spawn one blocking task per resource; collect (original_index, result)
-    let mut set: JoinSet<TaskResult> = JoinSet::new();
+    let mut tasks: JoinSet<TaskResult> = JoinSet::new();
 
-    for (idx, resource) in resources.iter().enumerate() {
+    for (index, resource) in resources.iter().enumerate() {
         let encrypted = extract_secret_data(resource);
         let name = resource.name.clone();
         let folder_parent_id = resource.folder_parent_id.clone();
-        let meta_armored: Option<String> = resource
+        let task_metadata_armored: Option<String> = resource
             .metadata_armored
             .as_ref()
-            .and_then(|v| v.as_str().map(str::to_owned));
-        let meta_key_type = resource.metadata_key_type.clone();
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let task_metadata_key_type = resource.metadata_key_type.clone();
         let key = Arc::clone(&pgp_key);
-        let meta_key = Arc::clone(&metadata_key);
-        let pass = Arc::clone(&passphrase);
-        let pb_clone = Arc::clone(&pb);
-        let permit = Arc::clone(&sem).acquire_owned().await?;
+        let task_metadata_key = Arc::clone(&metadata_key);
+        let task_passphrase = Arc::clone(&passphrase);
+        let task_progress_bar = Arc::clone(&progress_bar);
+        let permit = Arc::clone(&semaphore).acquire_owned().await?;
 
-        set.spawn_blocking(move || {
+        tasks.spawn_blocking(move || {
             let _permit = permit;
             let result = if encrypted.is_empty() {
                 Ok(SecretData::default())
             } else {
-                decrypt_secret_sync(&encrypted, &key, pass.expose_secret())
+                decrypt_secret_sync(&encrypted, &key, task_passphrase.expose_secret())
                     .with_context(|| format!("Failed to decrypt '{name}'"))
             };
 
             // Decrypt v5 metadata synchronously in the same blocking task.
-            let meta = meta_armored.as_deref().and_then(|armored| {
+            let metadata = task_metadata_armored.as_deref().and_then(|armored| {
                 let key_to_use: Option<&pgp::SignedSecretKey> =
-                    if meta_key_type.as_deref() == Some("user_key") {
+                    if task_metadata_key_type.as_deref() == Some("user_key") {
                         Some(key.as_ref())
                     } else {
-                        (*meta_key).as_ref()
+                        (*task_metadata_key).as_ref()
                     };
-                key_to_use.and_then(|k| decrypt_metadata_sync(armored, k, pass.expose_secret()))
+                key_to_use.and_then(|selected_key| {
+                    decrypt_metadata_sync(armored, selected_key, task_passphrase.expose_secret())
+                })
             });
 
-            pb_clone.inc(1);
-            (idx, folder_parent_id, result, meta)
+            task_progress_bar.inc(1);
+            (index, folder_parent_id, result, metadata)
         });
     }
 
@@ -159,24 +161,25 @@ pub async fn export_keepass(
     let mut ordered: Vec<Option<(Option<String>, KeePassEntry)>> =
         (0..resources.len()).map(|_| None).collect();
 
-    while let Some(join_result) = set.join_next().await {
+    while let Some(join_result) = tasks.join_next().await {
         match join_result {
-            Ok((idx, folder_parent_id, Ok(secret), meta)) => {
-                let entry = build_entry(&resources[idx], &secret, meta.as_ref());
-                ordered[idx] = Some((folder_parent_id, entry));
+            Ok((index, folder_parent_id, Ok(secret), metadata)) => {
+                let entry = build_entry(&resources[index], &secret, metadata.as_ref());
+                ordered[index] = Some((folder_parent_id, entry));
             }
-            Ok((idx, folder_parent_id, Err(e), meta)) => {
-                eprintln!("Warning: {e}");
-                let entry = build_entry(&resources[idx], &SecretData::default(), meta.as_ref());
-                ordered[idx] = Some((folder_parent_id, entry));
+            Ok((index, folder_parent_id, Err(error), metadata)) => {
+                eprintln!("Warning: {error}");
+                let entry =
+                    build_entry(&resources[index], &SecretData::default(), metadata.as_ref());
+                ordered[index] = Some((folder_parent_id, entry));
             }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Decryption task panicked: {e}"));
+            Err(error) => {
+                return Err(anyhow::anyhow!("Decryption task panicked: {error}"));
             }
         }
     }
 
-    pb.finish_with_message("All secrets decrypted");
+    progress_bar.finish_with_message("All secrets decrypted");
 
     let entries: Vec<(Option<String>, KeePassEntry)> = ordered.into_iter().flatten().collect();
 
@@ -196,7 +199,7 @@ fn extract_secret_data(resource: &Resource) -> String {
     resource
         .secrets
         .first()
-        .and_then(|s| s.data.clone())
+        .and_then(|secret| secret.data.clone())
         .unwrap_or_default()
 }
 
@@ -246,7 +249,7 @@ struct KeePassEntry {
 fn build_entry(
     resource: &Resource,
     secret: &SecretData,
-    meta: Option<&ResourceMetadata>,
+    metadata: Option<&ResourceMetadata>,
 ) -> KeePassEntry {
     let password = secret
         .password
@@ -255,25 +258,28 @@ fn build_entry(
         .unwrap_or_default();
 
     // v5: prefer metadata fields; fall back to cleartext resource fields.
-    let title = meta
-        .and_then(|m| m.name.as_deref())
+    let title = metadata
+        .and_then(|metadata| metadata.name.as_deref())
         .unwrap_or(&resource.name)
         .to_string();
-    let username = meta
-        .and_then(|m| m.username.as_deref())
+    let username = metadata
+        .and_then(|metadata| metadata.username.as_deref())
         .unwrap_or_else(|| resource.username.as_deref().unwrap_or(""))
         .to_string();
-    let url = meta
-        .and_then(|m| m.uris.as_ref()?.first()?.uri.as_deref())
+    let url = metadata
+        .and_then(|metadata| metadata.uris.as_ref()?.first()?.uri.as_deref())
         .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""))
         .to_string();
-    let notes = meta
-        .and_then(|m| m.description.as_deref())
+    let notes = metadata
+        .and_then(|metadata| metadata.description.as_deref())
         .or(secret.description.as_deref())
         .unwrap_or("")
         .to_string();
 
-    let otp = secret.totp.as_ref().map(|t| build_otpauth(resource, t));
+    let otp = secret
+        .totp
+        .as_ref()
+        .map(|totp| build_otpauth(resource, totp));
 
     KeePassEntry {
         title,
@@ -287,13 +293,13 @@ fn build_entry(
 
 /// Normalise a base32 secret: uppercase, strip spaces, add `=` padding.
 /// Some Passbolt entries omit padding; OTP clients and `KeePass` require it.
-fn normalize_base32(s: &str) -> String {
-    let s = s.trim().to_uppercase().replace(' ', "");
-    let rem = s.len() % 8;
-    if rem == 0 {
-        s
+fn normalize_base32(secret: &str) -> String {
+    let normalized = secret.trim().to_uppercase().replace(' ', "");
+    let remainder = normalized.len() % 8;
+    if remainder == 0 {
+        normalized
     } else {
-        format!("{}{}", s, "=".repeat(8 - rem))
+        format!("{}{}", normalized, "=".repeat(8 - remainder))
     }
 }
 
@@ -306,12 +312,12 @@ fn build_otpauth(resource: &Resource, totp: &TotpData) -> String {
         .clone()
         .unwrap_or_else(|| resource.name.clone())
         .replace(' ', "%20");
-    let algo = totp.algorithm.as_deref().unwrap_or("SHA1");
+    let algorithm = totp.algorithm.as_deref().unwrap_or("SHA1");
     let digits = totp.digits.unwrap_or(6);
     let period = totp.period.unwrap_or(30);
 
     format!(
-        "otpauth://totp/{label}?secret={secret}&issuer={issuer}&algorithm={algo}&digits={digits}&period={period}"
+        "otpauth://totp/{label}?secret={secret}&issuer={issuer}&algorithm={algorithm}&digits={digits}&period={period}"
     )
 }
 
@@ -329,12 +335,15 @@ fn write_kdbx(
         DatabaseKey,
     };
 
-    let mut db = Database::new(DatabaseConfig::default());
+    let mut database = Database::new(DatabaseConfig::default());
 
     if folders.is_empty() {
         // No folder data — flat export
-        for (_, e) in entries {
-            db.root.children.push(Node::Entry(build_kp_entry(e)));
+        for (_, entry) in entries {
+            database
+                .root
+                .children
+                .push(Node::Entry(build_kp_entry(entry)));
         }
     } else {
         // Build folder groups, preserving hierarchy.
@@ -345,7 +354,7 @@ fn write_kdbx(
         //  3. Add entries to the correct group (or root if no folder).
         //  4. Assemble in reverse-BFS order: remove deepest groups first and
         //     attach them to their parent groups, ending with root-level groups
-        //     attached to db.root.
+        //     attached to database.root.
 
         // Step 1: BFS ordering
         let bfs_order = bfs_folders(folders);
@@ -353,23 +362,23 @@ fn write_kdbx(
         // Step 2: create one Group per folder_id
         let mut groups: HashMap<String, Group> = bfs_order
             .iter()
-            .map(|f| {
+            .map(|folder| {
                 (
-                    f.id.clone(),
+                    folder.id.clone(),
                     Group {
-                        name: f.name.clone(),
+                        name: folder.name.clone(),
                         ..Default::default()
                     },
                 )
             })
             .collect();
 
-        // Step 3: add entries to the correct group (or db.root)
-        for (folder_id, e) in entries {
-            let node = Node::Entry(build_kp_entry(e));
-            match folder_id.as_deref().and_then(|fid| groups.get_mut(fid)) {
+        // Step 3: add entries to the correct group (or database.root)
+        for (folder_id, entry) in entries {
+            let node = Node::Entry(build_kp_entry(entry));
+            match folder_id.as_deref().and_then(|id| groups.get_mut(id)) {
                 Some(group) => group.children.push(node),
-                None => db.root.children.push(node),
+                None => database.root.children.push(node),
             }
         }
 
@@ -380,10 +389,10 @@ fn write_kdbx(
                 match folder
                     .folder_parent_id
                     .as_deref()
-                    .and_then(|pid| groups.get_mut(pid))
+                    .and_then(|parent_id| groups.get_mut(parent_id))
                 {
                     Some(parent) => parent.children.push(node),
-                    None => db.root.children.push(node),
+                    None => database.root.children.push(node),
                 }
             }
         }
@@ -394,7 +403,8 @@ fn write_kdbx(
     let mut file =
         std::fs::File::create(path).with_context(|| format!("Cannot create {}", path.display()))?;
 
-    db.save(&mut file, key)
+    database
+        .save(&mut file, key)
         .with_context(|| format!("Cannot write KDBX to {}", path.display()))?;
 
     Ok(())
@@ -404,30 +414,31 @@ fn write_kdbx(
 ///
 /// Uses `std::mem::take` to move each field out without triggering borrow
 /// conflicts with the `Drop` impl added by `ZeroizeOnDrop`.  After all takes,
-/// `e` holds only empty/None values and is then zeroized on drop.
-fn build_kp_entry(mut e: KeePassEntry) -> keepass::db::Entry {
+/// `source` holds only empty/None values and is then zeroized on drop.
+fn build_kp_entry(mut source: KeePassEntry) -> keepass::db::Entry {
     use keepass::db::{Entry, Value};
     use std::mem::take;
 
     let mut entry = Entry::new();
     entry
         .fields
-        .insert("Title".into(), Value::Unprotected(take(&mut e.title)));
-    entry
-        .fields
-        .insert("UserName".into(), Value::Unprotected(take(&mut e.username)));
-    entry
-        .fields
-        .insert("URL".into(), Value::Unprotected(take(&mut e.url)));
+        .insert("Title".into(), Value::Unprotected(take(&mut source.title)));
     entry.fields.insert(
-        "Password".into(),
-        Value::Protected(SecStr::new(take(&mut e.password).into_bytes())),
+        "UserName".into(),
+        Value::Unprotected(take(&mut source.username)),
     );
     entry
         .fields
-        .insert("Notes".into(), Value::Unprotected(take(&mut e.notes)));
+        .insert("URL".into(), Value::Unprotected(take(&mut source.url)));
+    entry.fields.insert(
+        "Password".into(),
+        Value::Protected(SecStr::new(take(&mut source.password).into_bytes())),
+    );
+    entry
+        .fields
+        .insert("Notes".into(), Value::Unprotected(take(&mut source.notes)));
 
-    if let Some(otp) = take(&mut e.otp) {
+    if let Some(otp) = take(&mut source.otp) {
         entry.fields.insert(
             "otp".into(),
             Value::Protected(SecStr::new(otp.into_bytes())),
@@ -443,12 +454,13 @@ fn collect_subtree_ids(root_id: &str, folders: &[Folder]) -> std::collections::H
     let mut queue = std::collections::VecDeque::new();
     queue.push_back(root_id.to_owned());
     while let Some(current) = queue.pop_front() {
-        if let Some(f) = folders.iter().find(|f| f.id == current) {
-            ids.insert(f.id.clone());
-            for child in folders.iter().filter(|c| {
-                c.folder_parent_id
+        if let Some(folder) = folders.iter().find(|candidate| candidate.id == current) {
+            ids.insert(folder.id.clone());
+            for child in folders.iter().filter(|candidate| {
+                candidate
+                    .folder_parent_id
                     .as_deref()
-                    .is_some_and(|pid| pid == current)
+                    .is_some_and(|parent_id| parent_id == current)
             }) {
                 queue.push_back(child.id.clone());
             }
@@ -462,23 +474,25 @@ fn bfs_folders(folders: &[Folder]) -> Vec<&Folder> {
     let mut result: Vec<&Folder> = Vec::with_capacity(folders.len());
     let mut queue: VecDeque<&Folder> = folders
         .iter()
-        .filter(|f| f.folder_parent_id.is_none())
+        .filter(|folder| folder.folder_parent_id.is_none())
         .collect();
 
-    while let Some(f) = queue.pop_front() {
-        result.push(f);
-        for child in folders
-            .iter()
-            .filter(|c| c.folder_parent_id.as_deref().is_some_and(|pid| pid == f.id))
-        {
+    while let Some(folder) = queue.pop_front() {
+        result.push(folder);
+        for child in folders.iter().filter(|candidate| {
+            candidate
+                .folder_parent_id
+                .as_deref()
+                .is_some_and(|parent_id| parent_id == folder.id)
+        }) {
             queue.push_back(child);
         }
     }
 
     // Append any orphaned folders (parent not in list) so they're not lost
-    for f in folders {
-        if !result.iter().any(|r| r.id == f.id) {
-            result.push(f);
+    for folder in folders {
+        if !result.iter().any(|added| added.id == folder.id) {
+            result.push(folder);
         }
     }
 
@@ -535,9 +549,9 @@ mod tests {
     #[test]
     fn test_needs_padding() {
         // 8 chars — already aligned; 7 chars needs 1 '='
-        let s = normalize_base32("JBSWY3D");
-        assert!(s.ends_with('='));
-        assert_eq!(s.len() % 8, 0);
+        let normalized = normalize_base32("JBSWY3D");
+        assert!(normalized.ends_with('='));
+        assert_eq!(normalized.len() % 8, 0);
     }
 
     #[test]

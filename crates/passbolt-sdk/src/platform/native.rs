@@ -46,8 +46,8 @@ impl NativeHttpClient {
         ) {
             let mut combined = Vec::from(cert_pem.as_slice());
             combined.extend_from_slice(key_pem);
-            let identity = reqwest::tls::Identity::from_pem(&combined).map_err(|e| {
-                TransportError::Http(format!("Failed to parse client TLS identity: {e}"))
+            let identity = reqwest::tls::Identity::from_pem(&combined).map_err(|error| {
+                TransportError::Http(format!("Failed to parse client TLS identity: {error}"))
             })?;
             builder = builder.identity(identity);
         }
@@ -55,8 +55,8 @@ impl NativeHttpClient {
         // HTTP proxy
         if let Some(url) = config.proxy_url.as_deref() {
             if !url.is_empty() {
-                let proxy = reqwest::Proxy::all(url).map_err(|e| {
-                    TransportError::Http(format!("Failed to configure HTTP proxy: {e}"))
+                let proxy = reqwest::Proxy::all(url).map_err(|error| {
+                    TransportError::Http(format!("Failed to configure HTTP proxy: {error}"))
                 })?;
                 builder = builder.proxy(proxy);
             }
@@ -70,40 +70,44 @@ impl NativeHttpClient {
             HeaderValue::from_static("application/json"),
         );
 
-        let inner = builder
-            .default_headers(headers)
-            .build()
-            .map_err(|e| TransportError::Http(format!("Failed to build HTTP client: {e}")))?;
+        let inner = builder.default_headers(headers).build().map_err(|error| {
+            TransportError::Http(format!("Failed to build HTTP client: {error}"))
+        })?;
 
         Ok(Self { inner })
     }
 }
 
 /// Convert a `reqwest::Response` into our `HttpResponse`.
-async fn into_http_response(resp: reqwest::Response) -> Result<HttpResponse, TransportError> {
-    let status = resp.status().as_u16();
+async fn into_http_response(response: reqwest::Response) -> Result<HttpResponse, TransportError> {
+    let status = response.status().as_u16();
 
-    let headers: Vec<(String, String)> = resp
+    let headers: Vec<(String, String)> = response
         .headers()
         .iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or("").to_string(),
+            )
+        })
         .collect();
 
     // Extract Set-Cookie headers for token parsing
     let mut all_headers = headers;
 
     // Also capture cookies from the cookie jar (if any were set)
-    for cookie in resp.cookies() {
+    for cookie in response.cookies() {
         all_headers.push((
             "set-cookie-name".to_string(),
             format!("{}={}", cookie.name(), cookie.value()),
         ));
     }
 
-    let body = resp
+    let body = response
         .bytes()
         .await
-        .map_err(|e| TransportError::Network(format!("Failed to read response body: {e}")))?
+        .map_err(|error| TransportError::Network(format!("Failed to read response body: {error}")))?
         .to_vec();
 
     Ok(HttpResponse {
@@ -120,14 +124,14 @@ impl HttpClient for NativeHttpClient {
         headers: &[(&str, &str)],
     ) -> Result<HttpResponse, TransportError> {
         let mut builder = self.inner.get(url);
-        for &(k, v) in headers {
-            builder = builder.header(k, v);
+        for &(name, value) in headers {
+            builder = builder.header(name, value);
         }
-        let resp = builder
+        let response = builder
             .send()
             .await
-            .map_err(|e| TransportError::Network(format!("GET {url}: {e}")))?;
-        into_http_response(resp).await
+            .map_err(|error| TransportError::Network(format!("GET {url}: {error}")))?;
+        into_http_response(response).await
     }
 
     async fn post(
@@ -137,15 +141,15 @@ impl HttpClient for NativeHttpClient {
         body: &[u8],
     ) -> Result<HttpResponse, TransportError> {
         let mut builder = self.inner.post(url);
-        for &(k, v) in headers {
-            builder = builder.header(k, v);
+        for &(name, value) in headers {
+            builder = builder.header(name, value);
         }
-        let resp = builder
+        let response = builder
             .body(body.to_vec())
             .send()
             .await
-            .map_err(|e| TransportError::Network(format!("POST {url}: {e}")))?;
-        into_http_response(resp).await
+            .map_err(|error| TransportError::Network(format!("POST {url}: {error}")))?;
+        into_http_response(response).await
     }
 
     async fn put(
@@ -155,15 +159,15 @@ impl HttpClient for NativeHttpClient {
         body: &[u8],
     ) -> Result<HttpResponse, TransportError> {
         let mut builder = self.inner.put(url);
-        for &(k, v) in headers {
-            builder = builder.header(k, v);
+        for &(name, value) in headers {
+            builder = builder.header(name, value);
         }
-        let resp = builder
+        let response = builder
             .body(body.to_vec())
             .send()
             .await
-            .map_err(|e| TransportError::Network(format!("PUT {url}: {e}")))?;
-        into_http_response(resp).await
+            .map_err(|error| TransportError::Network(format!("PUT {url}: {error}")))?;
+        into_http_response(response).await
     }
 
     async fn delete(
@@ -172,14 +176,14 @@ impl HttpClient for NativeHttpClient {
         headers: &[(&str, &str)],
     ) -> Result<HttpResponse, TransportError> {
         let mut builder = self.inner.delete(url);
-        for &(k, v) in headers {
-            builder = builder.header(k, v);
+        for &(name, value) in headers {
+            builder = builder.header(name, value);
         }
-        let resp = builder
+        let response = builder
             .send()
             .await
-            .map_err(|e| TransportError::Network(format!("DELETE {url}: {e}")))?;
-        into_http_response(resp).await
+            .map_err(|error| TransportError::Network(format!("DELETE {url}: {error}")))?;
+        into_http_response(response).await
     }
 
     async fn delete_with_body(
@@ -189,14 +193,14 @@ impl HttpClient for NativeHttpClient {
         body: &[u8],
     ) -> Result<HttpResponse, TransportError> {
         let mut builder = self.inner.delete(url);
-        for &(k, v) in headers {
-            builder = builder.header(k, v);
+        for &(name, value) in headers {
+            builder = builder.header(name, value);
         }
-        let resp = builder
+        let response = builder
             .body(body.to_vec())
             .send()
             .await
-            .map_err(|e| TransportError::Network(format!("DELETE {url}: {e}")))?;
-        into_http_response(resp).await
+            .map_err(|error| TransportError::Network(format!("DELETE {url}: {error}")))?;
+        into_http_response(response).await
     }
 }

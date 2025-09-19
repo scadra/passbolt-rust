@@ -48,8 +48,8 @@ pub async fn run(args: &ExportArgs, client: &Client, workers: usize) -> Result<(
         } => {
             use secrecy::ExposeSecret;
 
-            let pw = if let Some(p) = password {
-                p.clone()
+            let master_password = if let Some(provided_password) = password {
+                provided_password.clone()
             } else {
                 let secret = read_password("KeePass master password: ")?;
                 secret.expose_secret().to_string()
@@ -58,7 +58,7 @@ pub async fn run(args: &ExportArgs, client: &Client, workers: usize) -> Result<(
             crate::keepass::export::export_keepass(
                 client,
                 output,
-                &pw,
+                &master_password,
                 folder_id.as_deref(),
                 workers,
             )

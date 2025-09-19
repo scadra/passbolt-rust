@@ -25,9 +25,9 @@ pub async fn update_group<H: HttpClient>(
 ) -> Result<Group, PassboltError> {
     let mut groups_users = crate::group::build_group_members(add_managers, add_members);
 
-    for uid in remove_members {
+    for user_id in remove_members {
         groups_users.push(GroupUserPayload {
-            user_id: uid.clone(),
+            user_id: user_id.clone(),
             is_admin: false,
             delete: Some(true),
         });

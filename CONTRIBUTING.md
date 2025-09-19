@@ -42,7 +42,7 @@ There are several ways you can help out:
 
 * Create an issue on GitHub ONLY if you have found a bug
 * Review [enhancement or new feature requests](https://community.passbolt.com/c/backlog) on the community foum and contribute to the functional or technical specifications in the issues.
-* Pick a gap listed in [docs/PARITY-GO.md](docs/PARITY-GO.md) and send a patch, preferably with test cases included
+* Fix a known bug: `cargo test -- --ignored` lists them, each test names its ticket
 * Contribute to the [documentation](https://passbolt.com/help).
 * Write unit test cases to help increase test coverage.
 

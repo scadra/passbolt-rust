@@ -1,0 +1,176 @@
+// Passbolt ~ Open source password manager for teams
+// Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+//
+// Licensed under GNU Affero General Public License version 3 of the or any later version.
+// For full copyright and license information, please see the LICENSE
+// Redistributions of files must retain the above copyright notice.
+//
+// @copyright     Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+// @license       https://opensource.org/licenses/AGPL-3.0 AGPL License
+// @link          https://www.passbolt.com Passbolt(tm)
+// @since         0.1.0
+
+//! API payloads from `tests/fixtures/data`, shaped like real Passbolt responses.
+//! Encrypted fields are filled in with the fixture keys.
+
+use passbolt_sdk::types::Resource;
+use serde_json::{json, Value};
+
+use super::keys::{by_name, TestKey, ADA};
+use super::{ADA_ID, RESOURCE_ID};
+
+macro_rules! fixture {
+    ($file:literal) => {
+        serde_json::from_str::<Value>(include_str!(concat!("../../fixtures/data/", $file))).unwrap()
+    };
+}
+
+pub fn user(name: &str) -> Value {
+    let key = by_name(name);
+    let mut user = fixture!("users.json")[name].take();
+    user["gpgkey"]["armored_key"] = key.public.into();
+    user["gpgkey"]["fingerprint"] = key.fingerprint().into();
+    user
+}
+
+/// Same user served with another person's public key.
+pub fn user_with_key(name: &str, key: &TestKey) -> Value {
+    let mut user = user(name);
+    user["gpgkey"]["armored_key"] = key.public.into();
+    user["gpgkey"]["fingerprint"] = key.fingerprint().into();
+    user
+}
+
+pub fn users(names: &[&str]) -> Value {
+    names.iter().map(|name| user(name)).collect()
+}
+
+pub fn roles() -> Value {
+    fixture!("roles.json")
+}
+
+pub fn role_id(name: &str) -> String {
+    roles()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|role| role["name"] == name)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+pub fn resource_types() -> Value {
+    fixture!("resource_types.json")
+}
+
+pub fn resource_type_id(slug: &str) -> String {
+    resource_types()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource_type| resource_type["slug"] == slug)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// v4 resource of type `slug` whose secret is encrypted for ada.
+pub fn resource_v4(slug: &str, secret: &str) -> Value {
+    let mut resource = fixture!("resource_v4.json");
+    resource["resource_type_id"] = resource_type_id(slug).into();
+    resource["secrets"] =
+        json!([{ "user_id": ADA_ID, "resource_id": RESOURCE_ID, "data": ADA.encrypt(secret) }]);
+    resource
+}
+
+pub fn resource(slug: &str, secret: &str) -> Resource {
+    serde_json::from_value(resource_v4(slug, secret)).unwrap()
+}
+
+/// Decrypted v5 metadata, from `resource_metadata.json`.
+pub fn metadata(name: &str) -> Value {
+    let mut metadata = fixture!("resource_metadata.json");
+    metadata["name"] = name.into();
+    metadata
+}
+
+/// v5 resource whose `metadata` is encrypted for `key`.
+pub fn resource_v5(metadata: &Value, key: &TestKey, key_type: &str, key_id: &str) -> Resource {
+    let mut resource = fixture!("resource_v5.json");
+    resource["metadata"] = key.encrypt(&metadata.to_string()).into();
+    resource["metadata_key_type"] = key_type.into();
+    resource["metadata_key_id"] = key_id.into();
+    serde_json::from_value(resource).unwrap()
+}
+
+/// Decrypted `metadata_private_keys[].data`, as the server stores it.
+pub fn metadata_private_key(key: &TestKey) -> String {
+    let mut private_key = fixture!("metadata_private_key.json");
+    private_key["fingerprint"] = key.fingerprint().into();
+    private_key["armored_key"] = key.private.into();
+    private_key.to_string()
+}
+
+/// `/metadata/keys.json` body: one share for ada per `(key id, metadata key)`.
+pub fn metadata_keys(keys: &[(&str, &TestKey)]) -> Value {
+    keys.iter()
+        .map(|(key_id, key)| {
+            json!({
+                "id": key_id,
+                "fingerprint": key.fingerprint(),
+                "armored_key": key.public,
+                "metadata_private_keys": [{ "user_id": ADA_ID, "data": ADA.encrypt(&metadata_private_key(key)) }]
+            })
+        })
+        .collect()
+}
+
+pub fn permission(id: &str, aro: &str, aro_foreign_key: &str, permission_type: i32) -> Value {
+    let mut permission = fixture!("permission.json");
+    permission["id"] = id.into();
+    permission["aro"] = aro.into();
+    permission["aro_foreign_key"] = aro_foreign_key.into();
+    permission["type"] = permission_type.into();
+    permission
+}
+
+pub fn group() -> Value {
+    fixture!("group.json")
+}
+
+pub fn group_membership_id(user_id: &str) -> String {
+    group()["groups_users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|membership| membership["user_id"] == user_id)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// `PUT /groups/{id}/dry-run.json`: the group secret for ada, `secret` encrypted.
+pub fn group_dry_run(secret: &str) -> Value {
+    let mut dry_run = fixture!("group_dry_run.json");
+    dry_run["dry-run"]["Secrets"][0]["Secret"][0]["data"] = ADA.encrypt(secret).into();
+    dry_run
+}
+
+pub fn share_simulate() -> Value {
+    fixture!("share_simulate.json")
+}
+
+pub fn mfa_error() -> Value {
+    fixture!("mfa_error.json")
+}
+
+pub fn auth_verify(server: &TestKey) -> Value {
+    let mut verify_response = fixture!("auth_verify.json");
+    verify_response["fingerprint"] = server.fingerprint().into();
+    verify_response["keydata"] = server.public.into();
+    verify_response
+}

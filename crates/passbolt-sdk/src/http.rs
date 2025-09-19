@@ -29,8 +29,8 @@ impl HttpResponse {
         let lower = name.to_lowercase();
         self.headers
             .iter()
-            .find(|(k, _)| k.to_lowercase() == lower)
-            .map(|(_, v)| v.as_str())
+            .find(|(header_name, _)| header_name.to_lowercase() == lower)
+            .map(|(_, header_value)| header_value.as_str())
     }
 
     /// Get all header values matching the given name (case-insensitive).
@@ -39,8 +39,8 @@ impl HttpResponse {
         let lower = name.to_lowercase();
         self.headers
             .iter()
-            .filter(|(k, _)| k.to_lowercase() == lower)
-            .map(|(_, v)| v.as_str())
+            .filter(|(header_name, _)| header_name.to_lowercase() == lower)
+            .map(|(_, header_value)| header_value.as_str())
             .collect()
     }
 }

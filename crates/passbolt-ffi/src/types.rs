@@ -16,7 +16,7 @@ use passbolt_sdk::types;
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn to_iso(dt: Option<DateTime<Utc>>) -> Option<String> {
-    dt.map(|d| d.to_rfc3339())
+    dt.map(|date_time| date_time.to_rfc3339())
 }
 
 // ── Core domain types ───────────────────────────────────────────────────────
@@ -179,8 +179,8 @@ impl From<types::Permission> for FfiPermission {
             permission_type: p.permission_type,
             created: to_iso(p.created),
             modified: to_iso(p.modified),
-            user: p.user.map(|u| FfiUser::from(*u)),
-            group: p.group.map(|g| FfiGroup::from(*g)),
+            user: p.user.map(|user| FfiUser::from(*user)),
+            group: p.group.map(|group| FfiGroup::from(*group)),
         }
     }
 }
@@ -391,7 +391,7 @@ impl From<types::Comment> for FfiComment {
             modified: to_iso(c.modified),
             created_by: c.created_by,
             modified_by: c.modified_by,
-            creator: c.creator.map(|u| FfiUser::from(*u)),
+            creator: c.creator.map(|user| FfiUser::from(*user)),
         }
     }
 }

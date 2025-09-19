@@ -107,13 +107,13 @@ impl Config {
         // Env-var overrides: PASSBOLT_SERVER_ADDRESS, etc.
         settings = settings.add_source(config::Environment::with_prefix("PASSBOLT").separator("_"));
 
-        let cfg: Self = settings
+        let config: Self = settings
             .build()
             .context("Failed to build config")?
             .try_deserialize()
             .context("Failed to deserialize config")?;
 
-        Ok(cfg)
+        Ok(config)
     }
 
     /// Save the current config to disk with restrictive permissions (0o600 on Unix).
@@ -187,25 +187,25 @@ mod tests {
     fn test_default_no_panic() {
         // Config::default() is derived via Zeroize, which zeroes all fields.
         // Serde defaults (#[serde(default = "...")]) only apply during deserialization.
-        let cfg = Config::default();
-        assert!(!cfg.tls_skip_verify);
-        assert!(!cfg.debug);
-        assert_eq!(cfg.mfa_retrys, 0); // zeroed
-        assert_eq!(cfg.server_address, "");
+        let config = Config::default();
+        assert!(!config.tls_skip_verify);
+        assert!(!config.debug);
+        assert_eq!(config.mfa_retrys, 0); // zeroed
+        assert_eq!(config.server_address, "");
     }
 
     #[test]
     fn test_toml_roundtrip() {
-        let mut cfg = Config::default();
-        cfg.server_address = "https://pass.example.com".into();
-        cfg.user_private_key =
+        let mut config = Config::default();
+        config.server_address = "https://pass.example.com".into();
+        config.user_private_key =
             "-----BEGIN PGP PRIVATE KEY BLOCK-----\nfakekey\n-----END PGP PRIVATE KEY BLOCK-----"
                 .into();
-        cfg.user_password = "hunter2".into();
-        cfg.debug = true;
-        cfg.mfa_retrys = 5;
+        config.user_password = "hunter2".into();
+        config.debug = true;
+        config.mfa_retrys = 5;
 
-        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let toml_str = toml::to_string_pretty(&config).unwrap();
         let loaded: Config = toml::from_str(&toml_str).unwrap();
 
         assert_eq!(loaded.server_address, "https://pass.example.com");
@@ -216,9 +216,9 @@ mod tests {
 
     #[test]
     fn test_private_key_text_inline() {
-        let mut cfg = Config::default();
-        cfg.user_private_key = "-----BEGIN PGP PRIVATE KEY BLOCK-----".into();
-        let text = cfg.private_key_text().unwrap();
+        let mut config = Config::default();
+        config.user_private_key = "-----BEGIN PGP PRIVATE KEY BLOCK-----".into();
+        let text = config.private_key_text().unwrap();
         assert!(text.starts_with("-----BEGIN PGP PRIVATE KEY BLOCK-----"));
     }
 
@@ -229,16 +229,16 @@ mod tests {
         writeln!(file, "-----BEGIN PGP PRIVATE KEY BLOCK-----").unwrap();
         writeln!(file, "key-from-file").unwrap();
 
-        let mut cfg = Config::default();
-        cfg.user_private_key_file = file.path().to_string_lossy().into_owned();
-        let text = cfg.private_key_text().unwrap();
+        let mut config = Config::default();
+        config.user_private_key_file = file.path().to_string_lossy().into_owned();
+        let text = config.private_key_text().unwrap();
         assert!(text.contains("key-from-file"));
     }
 
     #[test]
     fn test_private_key_text_missing() {
-        let cfg = Config::default();
-        assert!(cfg.private_key_text().is_err());
+        let config = Config::default();
+        assert!(config.private_key_text().is_err());
     }
 
     #[test]
@@ -247,11 +247,11 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "from-file").unwrap();
 
-        let mut cfg = Config::default();
-        cfg.user_private_key = "inline-key".into();
-        cfg.user_private_key_file = file.path().to_string_lossy().into_owned();
+        let mut config = Config::default();
+        config.user_private_key = "inline-key".into();
+        config.user_private_key_file = file.path().to_string_lossy().into_owned();
 
-        let text = cfg.private_key_text().unwrap();
+        let text = config.private_key_text().unwrap();
         assert_eq!(text, "inline-key");
     }
 
@@ -275,8 +275,8 @@ mod tests {
         file.write_all(b"test = true\n").unwrap();
         drop(file);
 
-        let meta = std::fs::metadata(&path).unwrap();
-        let mode = meta.permissions().mode() & 0o777;
+        let metadata = std::fs::metadata(&path).unwrap();
+        let mode = metadata.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
 }

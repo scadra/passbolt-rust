@@ -22,13 +22,13 @@
 //! use passbolt_sdk::{PassboltSdk, SdkConfig, NativeHttpClient, NativeHttpConfig};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let http_cfg = NativeHttpConfig {
+//! let http_config = NativeHttpConfig {
 //!     tls_skip_verify: false,
 //!     client_cert_pem: None,
 //!     client_key_pem: None,
 //!     proxy_url: None,
 //! };
-//! let http = NativeHttpClient::new(&http_cfg)?;
+//! let http = NativeHttpClient::new(&http_config)?;
 //! // let client = PassboltSdk::login(http, &sdk_config, None, 3).await?;
 //! # Ok(())
 //! # }

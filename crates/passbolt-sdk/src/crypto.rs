@@ -34,24 +34,21 @@ impl Drop for PrivateKey {
 pub fn parse_private_key(armored: &str) -> Result<PrivateKey, CryptoError> {
     let cursor = Cursor::new(armored.as_bytes());
     let (key, _) = SignedSecretKey::from_armor_single(cursor)
-        .map_err(|e| CryptoError::KeyParse(format!("private key: {e}")))?;
+        .map_err(|error| CryptoError::KeyParse(format!("private key: {error}")))?;
     key.verify()
-        .map_err(|e| CryptoError::KeyParse(format!("private key verification: {e}")))?;
+        .map_err(|error| CryptoError::KeyParse(format!("private key verification: {error}")))?;
 
-    let fp = hex::encode(key.fingerprint().as_bytes()).to_uppercase();
-    Ok(PrivateKey {
-        key,
-        fingerprint: fp,
-    })
+    let fingerprint = hex::encode(key.fingerprint().as_bytes()).to_uppercase();
+    Ok(PrivateKey { key, fingerprint })
 }
 
 /// Parse a PGP public key from ASCII-armored text.
 pub fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
     let cursor = Cursor::new(armored.as_bytes());
     let (key, _) = SignedPublicKey::from_armor_single(cursor)
-        .map_err(|e| CryptoError::KeyParse(format!("public key: {e}")))?;
+        .map_err(|error| CryptoError::KeyParse(format!("public key: {error}")))?;
     key.verify()
-        .map_err(|e| CryptoError::KeyParse(format!("public key verification: {e}")))?;
+        .map_err(|error| CryptoError::KeyParse(format!("public key verification: {error}")))?;
     Ok(key)
 }
 
@@ -61,12 +58,12 @@ pub fn decrypt_message(
     passphrase: &str,
 ) -> Result<Vec<u8>, CryptoError> {
     let cursor = Cursor::new(armored_message.as_bytes());
-    let (msg, _) = Message::from_armor_single(cursor)
-        .map_err(|e| CryptoError::Decrypt(format!("parse message: {e}")))?;
+    let (message, _) = Message::from_armor_single(cursor)
+        .map_err(|error| CryptoError::Decrypt(format!("parse message: {error}")))?;
 
-    let (decrypted, _) = msg
+    let (decrypted, _) = message
         .decrypt(|| passphrase.to_string(), &[private_key])
-        .map_err(|e| CryptoError::Decrypt(format!("{e}")))?;
+        .map_err(|error| CryptoError::Decrypt(format!("{error}")))?;
 
     let content = decrypted
         .get_literal()
@@ -81,16 +78,16 @@ pub fn encrypt_message(
 ) -> Result<String, CryptoError> {
     use pgp::crypto::sym::SymmetricKeyAlgorithm;
 
-    let msg = Message::new_literal_bytes("", plaintext);
+    let message = Message::new_literal_bytes("", plaintext);
     let mut rng = rand::thread_rng();
 
-    let encrypted = msg
+    let encrypted = message
         .encrypt_to_keys_seipdv1(&mut rng, SymmetricKeyAlgorithm::AES256, recipients)
-        .map_err(|e| CryptoError::Encrypt(format!("{e}")))?;
+        .map_err(|error| CryptoError::Encrypt(format!("{error}")))?;
 
     let armored = encrypted
         .to_armored_string(ArmorOptions::default())
-        .map_err(|e| CryptoError::Encrypt(format!("armor: {e}")))?;
+        .map_err(|error| CryptoError::Encrypt(format!("armor: {error}")))?;
 
     Ok(armored)
 }
@@ -99,32 +96,17 @@ pub fn encrypt_message(
 mod tests {
     use super::*;
 
-    /// Generate a fresh RSA-2048 keypair with an empty passphrase for tests.
-    fn generate_test_keypair() -> (SignedSecretKey, SignedPublicKey) {
-        use pgp::composed::{KeyType, SecretKeyParamsBuilder};
-        use pgp::types::SecretKeyTrait;
+    const SERVER_PRIVATE: &str = include_str!("../tests/fixtures/keys/server_private.asc");
+    const SERVER_PUBLIC: &str = include_str!("../tests/fixtures/keys/server_public.asc");
+    const METADATA_PRIVATE: &str = include_str!("../tests/fixtures/keys/metadata_private.asc");
+    const METADATA_PUBLIC: &str = include_str!("../tests/fixtures/keys/metadata_public.asc");
 
-        let mut rng = rand::thread_rng();
-
-        let params = SecretKeyParamsBuilder::default()
-            .key_type(KeyType::Rsa(2048))
-            .can_sign(true)
-            .can_encrypt(true)
-            .primary_user_id("Test User <test@test.local>".into())
-            .build()
-            .expect("key params");
-
-        let secret_key = params.generate(&mut rng).expect("key generate");
-        let signed_secret = secret_key
-            .sign(&mut rng, || String::new())
-            .expect("sign secret key");
-        // public_key() returns an unsigned PublicKey; sign it to get SignedPublicKey
-        let public_key = signed_secret.public_key();
-        let signed_public = public_key
-            .sign(&mut rng, &signed_secret, || String::new())
-            .expect("sign public key");
-
-        (signed_secret, signed_public)
+    /// Fixture keypair without passphrase.
+    fn keypair(private: &str, public: &str) -> (SignedSecretKey, SignedPublicKey) {
+        (
+            parse_private_key(private).unwrap().key.clone(),
+            parse_public_key(public).unwrap(),
+        )
     }
 
     #[test]
@@ -133,53 +115,16 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_private_key_valid() {
-        let (secret_key, _pub) = generate_test_keypair();
-        let armored = secret_key
-            .to_armored_string(ArmorOptions::default())
-            .expect("armor");
-        let parsed = parse_private_key(&armored);
-        assert!(parsed.is_ok());
-        // Fingerprint is a non-empty hex string
-        let pk = parsed.unwrap();
-        assert!(!pk.fingerprint.is_empty());
-        assert!(pk.fingerprint.chars().all(|c| c.is_ascii_hexdigit()));
-    }
+    fn test_parse_private_key_fingerprint() {
+        let fingerprint = parse_private_key(SERVER_PRIVATE)
+            .unwrap()
+            .fingerprint
+            .clone();
 
-    #[test]
-    fn test_encrypt_decrypt_roundtrip() {
-        let (secret_key, pub_key) = generate_test_keypair();
-        let plaintext = b"super secret passphrase";
-
-        let armored = encrypt_message(plaintext, &[&pub_key]).expect("encrypt");
-        let decrypted = decrypt_message(&armored, &secret_key, "").expect("decrypt");
-
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_encrypt_for_multiple_keys() {
-        let (sk1, pk1) = generate_test_keypair();
-        let (sk2, pk2) = generate_test_keypair();
-        let plaintext = b"hello both";
-
-        let armored = encrypt_message(plaintext, &[&pk1, &pk2]).expect("encrypt");
-
-        let d1 = decrypt_message(&armored, &sk1, "").expect("decrypt key1");
-        let d2 = decrypt_message(&armored, &sk2, "").expect("decrypt key2");
-        assert_eq!(d1, plaintext);
-        assert_eq!(d2, plaintext);
-    }
-
-    #[test]
-    fn test_decrypt_wrong_key_fails() {
-        let (_sk1, pk1) = generate_test_keypair();
-        let (sk2, _pk2) = generate_test_keypair();
-        let plaintext = b"secret";
-
-        let armored = encrypt_message(plaintext, &[&pk1]).expect("encrypt");
-        // sk2 was not a recipient — decryption must fail
-        assert!(decrypt_message(&armored, &sk2, "").is_err());
+        assert_eq!(fingerprint.len(), 40);
+        assert!(fingerprint
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_lowercase()));
     }
 
     #[test]
@@ -188,11 +133,38 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_public_key_valid() {
-        let (_sk, pub_key) = generate_test_keypair();
-        let armored = pub_key
-            .to_armored_string(ArmorOptions::default())
-            .expect("armor");
-        assert!(parse_public_key(&armored).is_ok());
+    fn test_encrypt_decrypt_roundtrip() {
+        let (secret, public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+
+        let armored = encrypt_message(b"secret", &[&public]).unwrap();
+
+        assert_eq!(decrypt_message(&armored, &secret, "").unwrap(), b"secret");
+    }
+
+    #[test]
+    fn test_encrypt_for_multiple_keys() {
+        let (server_secret, server_public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+        let (metadata_secret, metadata_public) = keypair(METADATA_PRIVATE, METADATA_PUBLIC);
+
+        let armored = encrypt_message(b"both", &[&server_public, &metadata_public]).unwrap();
+
+        assert_eq!(
+            decrypt_message(&armored, &server_secret, "").unwrap(),
+            b"both"
+        );
+        assert_eq!(
+            decrypt_message(&armored, &metadata_secret, "").unwrap(),
+            b"both"
+        );
+    }
+
+    #[test]
+    fn test_decrypt_with_another_key_fails() {
+        let (_, server_public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+        let (metadata_secret, _) = keypair(METADATA_PRIVATE, METADATA_PUBLIC);
+
+        let armored = encrypt_message(b"secret", &[&server_public]).unwrap();
+
+        assert!(decrypt_message(&armored, &metadata_secret, "").is_err());
     }
 }

@@ -26,26 +26,26 @@ pub async fn check_pwned<H: HttpClient>(http: &H, password: &str) -> Result<u64,
     let suffix = &hash[5..];
 
     let url = format!("https://api.pwnedpasswords.com/range/{prefix}");
-    let resp = http.get(&url, &[]).await?;
+    let response = http.get(&url, &[]).await?;
 
-    if resp.status >= 400 {
+    if response.status >= 400 {
         return Err(PassboltError::Other(format!(
             "HIBP API returned status {}",
-            resp.status
+            response.status
         )));
     }
 
-    let body = String::from_utf8(resp.body)
-        .map_err(|e| PassboltError::Other(format!("HIBP response is not valid UTF-8: {e}")))?;
+    let body = String::from_utf8(response.body).map_err(|error| {
+        PassboltError::Other(format!("HIBP response is not valid UTF-8: {error}"))
+    })?;
 
     for line in body.lines() {
         // Format: <SUFFIX>:<COUNT>
         if let Some((line_suffix, count_str)) = line.split_once(':') {
             if line_suffix.trim() == suffix {
-                return count_str
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|e| PassboltError::Other(format!("Failed to parse HIBP count: {e}")));
+                return count_str.trim().parse::<u64>().map_err(|error| {
+                    PassboltError::Other(format!("Failed to parse HIBP count: {error}"))
+                });
             }
         }
     }

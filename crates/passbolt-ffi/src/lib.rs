@@ -100,17 +100,18 @@ impl PassboltClient {
         mfa_totp_token: Option<String>,
     ) -> Result<Arc<Self>, PassboltFfiError> {
         RUNTIME.block_on(async {
-            let http_cfg = NativeHttpConfig {
+            let http_config = NativeHttpConfig {
                 tls_skip_verify,
                 client_cert_pem: None,
                 client_key_pem: None,
                 proxy_url: proxy.clone(),
             };
-            let http = NativeHttpClient::new(&http_cfg).map_err(|e| PassboltFfiError::Config {
-                message: e.to_string(),
-            })?;
+            let http =
+                NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
+                    message: error.to_string(),
+                })?;
 
-            let cfg = SdkConfig {
+            let config = SdkConfig {
                 server_url,
                 private_key_armored,
                 passphrase: secrecy::SecretString::from(passphrase),
@@ -130,7 +131,7 @@ impl PassboltClient {
                 server_verify_token: String::new(),
             };
 
-            let client = Client::login(http, &cfg, None, 3)
+            let client = Client::login(http, &config, None, 3)
                 .await
                 .map_err(PassboltFfiError::from)?;
 
@@ -228,10 +229,10 @@ impl PassboltClient {
         &self,
         id: String,
     ) -> Result<Vec<FfiPermission>, PassboltFfiError> {
-        let perms = RUNTIME
+        let permissions = RUNTIME
             .block_on(self.inner.get_resource_permissions(&id))
             .map_err(PassboltFfiError::from)?;
-        Ok(perms.into_iter().map(FfiPermission::from).collect())
+        Ok(permissions.into_iter().map(FfiPermission::from).collect())
     }
 
     // ── Folders ─────────────────────────────────────────────────────────
@@ -432,10 +433,10 @@ impl PassboltClient {
 
     /// Add a resource to favorites.
     pub fn add_favorite(&self, resource_id: String) -> Result<FfiFavorite, PassboltFfiError> {
-        let fav = RUNTIME
+        let favorite = RUNTIME
             .block_on(self.inner.add_favorite(&resource_id))
             .map_err(PassboltFfiError::from)?;
-        Ok(FfiFavorite::from(fav))
+        Ok(FfiFavorite::from(favorite))
     }
 
     /// Remove a favorite.
@@ -489,16 +490,16 @@ pub fn decrypt_message(
     private_key_armored: String,
     passphrase: String,
 ) -> Result<Vec<u8>, PassboltFfiError> {
-    let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|e| {
+    let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|error| {
         PassboltFfiError::Crypto {
-            message: e.to_string(),
+            message: error.to_string(),
         }
     })?;
-    passbolt_sdk::crypto::decrypt_message(&armored_message, &key.key, &passphrase).map_err(|e| {
-        PassboltFfiError::Crypto {
-            message: e.to_string(),
-        }
-    })
+    passbolt_sdk::crypto::decrypt_message(&armored_message, &key.key, &passphrase).map_err(
+        |error| PassboltFfiError::Crypto {
+            message: error.to_string(),
+        },
+    )
 }
 
 /// Encrypt a plaintext message for one or more PGP public keys.
@@ -510,15 +511,15 @@ pub fn encrypt_message(
 ) -> Result<String, PassboltFfiError> {
     let parsed: Result<Vec<_>, _> = public_keys_armored
         .iter()
-        .map(|k| passbolt_sdk::crypto::parse_public_key(k))
+        .map(|armored_key| passbolt_sdk::crypto::parse_public_key(armored_key))
         .collect();
-    let keys = parsed.map_err(|e| PassboltFfiError::Crypto {
-        message: e.to_string(),
+    let keys = parsed.map_err(|error| PassboltFfiError::Crypto {
+        message: error.to_string(),
     })?;
     let key_refs: Vec<_> = keys.iter().collect();
-    passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs).map_err(|e| {
+    passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs).map_err(|error| {
         PassboltFfiError::Crypto {
-            message: e.to_string(),
+            message: error.to_string(),
         }
     })
 }
@@ -526,9 +527,9 @@ pub fn encrypt_message(
 /// Parse a PGP private key and return its fingerprint (hex uppercase).
 #[uniffi::export]
 pub fn get_key_fingerprint(private_key_armored: String) -> Result<String, PassboltFfiError> {
-    let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|e| {
+    let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|error| {
         PassboltFfiError::Crypto {
-            message: e.to_string(),
+            message: error.to_string(),
         }
     })?;
     Ok(key.fingerprint.clone())

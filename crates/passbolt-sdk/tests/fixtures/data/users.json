@@ -1,0 +1,146 @@
+{
+  "ada": {
+    "id": "8b6c3a10-0000-4000-8000-00000000a0da",
+    "role_id": "0d6a6f5a-4b39-4c9f-9e9a-0b8bd9e2e5a1",
+    "username": "ada@passbolt.test",
+    "active": true,
+    "deleted": false,
+    "created": "2025-09-16T10:00:00+00:00",
+    "modified": "2025-09-16T10:00:00+00:00",
+    "profile": {
+      "id": "8b6c3a10-0000-4000-8000-000000009999",
+      "user_id": "8b6c3a10-0000-4000-8000-00000000a0da",
+      "first_name": "Ada",
+      "last_name": "Test",
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    },
+    "role": {
+      "id": "0d6a6f5a-4b39-4c9f-9e9a-0b8bd9e2e5a1",
+      "name": "admin"
+    },
+    "gpgkey": {
+      "id": "8b6c3a10-0000-4000-8000-000000008888",
+      "user_id": "8b6c3a10-0000-4000-8000-00000000a0da",
+      "armored_key": "",
+      "bits": 2048,
+      "uid": "ada (TEST ONLY) <ada@passbolt.test>",
+      "key_id": "",
+      "fingerprint": "",
+      "type": "RSA",
+      "expires": null,
+      "key_created": "2025-09-16T10:00:00+00:00",
+      "deleted": false,
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    }
+  },
+  "betty": {
+    "id": "8b6c3a10-0000-4000-8000-000000000be7",
+    "role_id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+    "username": "betty@passbolt.test",
+    "active": true,
+    "deleted": false,
+    "created": "2025-09-16T10:00:00+00:00",
+    "modified": "2025-09-16T10:00:00+00:00",
+    "profile": {
+      "id": "8b6c3a10-0000-4000-8000-000000009999",
+      "user_id": "8b6c3a10-0000-4000-8000-000000000be7",
+      "first_name": "Betty",
+      "last_name": "Test",
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    },
+    "role": {
+      "id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+      "name": "user"
+    },
+    "gpgkey": {
+      "id": "8b6c3a10-0000-4000-8000-000000008888",
+      "user_id": "8b6c3a10-0000-4000-8000-000000000be7",
+      "armored_key": "",
+      "bits": 2048,
+      "uid": "betty (TEST ONLY) <betty@passbolt.test>",
+      "key_id": "",
+      "fingerprint": "",
+      "type": "RSA",
+      "expires": null,
+      "key_created": "2025-09-16T10:00:00+00:00",
+      "deleted": false,
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    }
+  },
+  "carol": {
+    "id": "8b6c3a10-0000-4000-8000-0000000ca201",
+    "role_id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+    "username": "carol@passbolt.test",
+    "active": true,
+    "deleted": false,
+    "created": "2025-09-16T10:00:00+00:00",
+    "modified": "2025-09-16T10:00:00+00:00",
+    "profile": {
+      "id": "8b6c3a10-0000-4000-8000-0000000c9999",
+      "user_id": "8b6c3a10-0000-4000-8000-0000000ca201",
+      "first_name": "Carol",
+      "last_name": "Test",
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    },
+    "role": {
+      "id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+      "name": "user"
+    },
+    "gpgkey": {
+      "id": "8b6c3a10-0000-4000-8000-0000000c8888",
+      "user_id": "8b6c3a10-0000-4000-8000-0000000ca201",
+      "armored_key": "",
+      "bits": 2048,
+      "uid": "carol (TEST ONLY) <carol@passbolt.test>",
+      "key_id": "",
+      "fingerprint": "",
+      "type": "RSA",
+      "expires": null,
+      "key_created": "2025-09-16T10:00:00+00:00",
+      "deleted": false,
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    }
+  },
+  "erin": {
+    "id": "8b6c3a10-0000-4000-8000-00000000e121",
+    "role_id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+    "username": "erin@passbolt.test",
+    "active": true,
+    "deleted": false,
+    "created": "2025-09-16T10:00:00+00:00",
+    "modified": "2025-09-16T10:00:00+00:00",
+    "profile": {
+      "id": "8b6c3a10-0000-4000-8000-000000009999",
+      "user_id": "8b6c3a10-0000-4000-8000-00000000e121",
+      "first_name": "Erin",
+      "last_name": "Test",
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    },
+    "role": {
+      "id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+      "name": "user"
+    },
+    "gpgkey": {
+      "id": "8b6c3a10-0000-4000-8000-000000008888",
+      "user_id": "8b6c3a10-0000-4000-8000-00000000e121",
+      "armored_key": "",
+      "bits": 2048,
+      "uid": "erin (TEST ONLY) <erin@passbolt.test>",
+      "key_id": "",
+      "fingerprint": "",
+      "type": "RSA",
+      "expires": null,
+      "key_created": "2025-09-16T10:00:00+00:00",
+      "deleted": false,
+      "created": "2025-09-16T10:00:00+00:00",
+      "modified": "2025-09-16T10:00:00+00:00"
+    }
+  }
+}

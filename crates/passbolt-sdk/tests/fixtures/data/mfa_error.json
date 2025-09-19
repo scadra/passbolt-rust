@@ -1,0 +1,8 @@
+{
+  "mfa_providers": [
+    "totp"
+  ],
+  "providers": {
+    "totp": "https://passbolt.test/mfa/verify/totp.json"
+  }
+}

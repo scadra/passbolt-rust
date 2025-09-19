@@ -16,25 +16,28 @@ use crate::filter::{filter_entities, Filter};
 use crate::types::Resource;
 
 #[must_use]
-pub fn resource_fields(r: &Resource) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    m.insert("id".into(), r.id.clone());
-    m.insert("name".into(), r.name.clone());
-    m.insert("username".into(), r.username.clone().unwrap_or_default());
-    m.insert("uri".into(), r.uri.clone().unwrap_or_default());
-    m.insert(
+pub fn resource_fields(resource: &Resource) -> HashMap<String, String> {
+    let mut fields = HashMap::new();
+    fields.insert("id".into(), resource.id.clone());
+    fields.insert("name".into(), resource.name.clone());
+    fields.insert(
+        "username".into(),
+        resource.username.clone().unwrap_or_default(),
+    );
+    fields.insert("uri".into(), resource.uri.clone().unwrap_or_default());
+    fields.insert(
         "description".into(),
-        r.description.clone().unwrap_or_default(),
+        resource.description.clone().unwrap_or_default(),
     );
-    m.insert(
+    fields.insert(
         "folder_parent_id".into(),
-        r.folder_parent_id.clone().unwrap_or_default(),
+        resource.folder_parent_id.clone().unwrap_or_default(),
     );
-    m.insert(
+    fields.insert(
         "resource_type_id".into(),
-        r.resource_type_id.clone().unwrap_or_default(),
+        resource.resource_type_id.clone().unwrap_or_default(),
     );
-    m
+    fields
 }
 
 pub fn filter_resources(resources: Vec<Resource>, filters: &[Filter]) -> Vec<Resource> {

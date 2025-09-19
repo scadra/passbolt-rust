@@ -35,10 +35,11 @@ pub async fn list_folders<H: HttpClient>(
 
     // Client-side filter for additional parent folder IDs (API only supports one at a time)
     if parent_folder_ids.len() > 1 {
-        folders.retain(|f| {
-            f.folder_parent_id
+        folders.retain(|folder| {
+            folder
+                .folder_parent_id
                 .as_deref()
-                .is_some_and(|pid| parent_folder_ids.iter().any(|id| id == pid))
+                .is_some_and(|parent_id| parent_folder_ids.iter().any(|id| id == parent_id))
         });
     }
 

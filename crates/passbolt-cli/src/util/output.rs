@@ -22,10 +22,17 @@ pub fn print_table(columns: &[&str], rows: Vec<Vec<String>>) {
     let mut table = Table::new();
     table
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(columns.iter().map(|c| Cell::new(c).fg(Color::Cyan)));
+        .set_header(
+            columns
+                .iter()
+                .map(|column| Cell::new(column).fg(Color::Cyan)),
+        );
 
     for row in rows {
-        let safe_row: Vec<String> = row.into_iter().map(|v| strip_control_chars(&v)).collect();
+        let safe_row: Vec<String> = row
+            .into_iter()
+            .map(|cell| strip_control_chars(&cell))
+            .collect();
         table.add_row(safe_row);
     }
     println!("{table}");
@@ -33,8 +40,10 @@ pub fn print_table(columns: &[&str], rows: Vec<Vec<String>>) {
 
 /// Remove ASCII control characters (0x00–0x1F and 0x7F) from a string.
 /// Prevents terminal escape injection from resource names/values.
-fn strip_control_chars(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+fn strip_control_chars(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .collect()
 }
 
 /// Print any serializable value as pretty JSON.
@@ -47,9 +56,9 @@ pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
 /// Convert a display column name to a JSON field name (`snake_case`).
 ///
 /// Handles the common Passbolt column name conventions used in table output.
-fn column_to_field(col: &str) -> String {
+fn column_to_field(column: &str) -> String {
     // Map known display names → JSON field names
-    match col.to_lowercase().as_str() {
+    match column.to_lowercase().as_str() {
         "id" => "id".into(),
         "name" => "name".into(),
         "username" => "username".into(),
@@ -72,17 +81,17 @@ fn column_to_field(col: &str) -> String {
     }
 }
 
-fn camel_to_snake(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, ch) in s.char_indices() {
-        if ch.is_uppercase() && i > 0 {
-            out.push('_');
+fn camel_to_snake(text: &str) -> String {
+    let mut snake = String::with_capacity(text.len() + 4);
+    for (i, character) in text.char_indices() {
+        if character.is_uppercase() && i > 0 {
+            snake.push('_');
         }
-        for c in ch.to_lowercase() {
-            out.push(c);
+        for lowercase in character.to_lowercase() {
+            snake.push(lowercase);
         }
     }
-    out
+    snake
 }
 
 /// Print a list of serializable values as pretty JSON, filtered to the given columns.
@@ -98,16 +107,22 @@ pub fn print_json_with_columns<T: Serialize>(
         return Ok(());
     }
 
-    let fields: Vec<String> = columns.iter().map(|c| column_to_field(c)).collect();
+    let fields: Vec<String> = columns
+        .iter()
+        .map(|column| column_to_field(column))
+        .collect();
 
     let filtered: Vec<serde_json::Value> = values
         .iter()
-        .map(|v| {
-            let obj = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
-            if let serde_json::Value::Object(map) = obj {
+        .map(|value| {
+            let serialized = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(map) = serialized {
                 let filtered_map: serde_json::Map<String, serde_json::Value> = fields
                     .iter()
-                    .filter_map(|f| map.get(f).map(|val| (f.clone(), val.clone())))
+                    .filter_map(|field| {
+                        map.get(field)
+                            .map(|field_value| (field.clone(), field_value.clone()))
+                    })
                     .collect();
                 serde_json::Value::Object(filtered_map)
             } else {
@@ -123,8 +138,8 @@ pub fn print_json_with_columns<T: Serialize>(
 
 /// Print key-value pairs.
 pub fn print_kv(pairs: &[(&str, &str)]) {
-    for (k, v) in pairs {
-        println!("{}: {}", k.bold(), v);
+    for (key, value) in pairs {
+        println!("{}: {}", key.bold(), value);
     }
 }
 
@@ -197,14 +212,14 @@ mod tests {
     #[test]
     fn test_columns_subset_returns_ok() {
         let items = make_items();
-        let cols = vec!["id".to_string(), "name".to_string()];
-        assert!(print_json_with_columns(&items, &cols).is_ok());
+        let columns = vec!["id".to_string(), "name".to_string()];
+        assert!(print_json_with_columns(&items, &columns).is_ok());
     }
 
     #[test]
     fn test_columns_unknown_returns_ok() {
         let items = make_items();
-        let cols = vec!["nonexistent_column".to_string()];
-        assert!(print_json_with_columns(&items, &cols).is_ok());
+        let columns = vec!["nonexistent_column".to_string()];
+        assert!(print_json_with_columns(&items, &columns).is_ok());
     }
 }

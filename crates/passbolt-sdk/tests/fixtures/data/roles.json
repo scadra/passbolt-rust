@@ -1,0 +1,17 @@
+[
+  {
+    "id": "0d6a6f5a-4b39-4c9f-9e9a-0b8bd9e2e5a1",
+    "name": "admin",
+    "description": "Organization administrator"
+  },
+  {
+    "id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+    "name": "user",
+    "description": "Logged in user"
+  },
+  {
+    "id": "8d3a9f39-7f4c-4b8e-9c0e-2c5c1f1e7d10",
+    "name": "guest",
+    "description": "Non logged in user"
+  }
+]

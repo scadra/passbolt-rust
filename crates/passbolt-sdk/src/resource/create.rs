@@ -32,10 +32,10 @@ pub async fn create_resource<H: HttpClient>(
 ) -> Result<crate::types::Resource, PassboltError> {
     // Determine resource type slug and build secret JSON accordingly
     let (resource_type_slug, secret_data) = match (&totp, password) {
-        (Some(totp_data), Some(pwd)) => {
+        (Some(totp_data), Some(password)) => {
             // Password + TOTP
             let data = serde_json::json!({
-                "password": pwd,
+                "password": password,
                 "description": description.unwrap_or(""),
                 "totp": totp_data
             });
@@ -46,10 +46,10 @@ pub async fn create_resource<H: HttpClient>(
             let data = serde_json::json!({ "totp": totp_data });
             ("totp", data)
         }
-        (None, Some(pwd)) => {
+        (None, Some(password)) => {
             // Password + description (default)
             let data = serde_json::json!({
-                "password": pwd,
+                "password": password,
                 "description": description.unwrap_or("")
             });
             ("password-and-description", data)
@@ -84,7 +84,7 @@ pub async fn create_resource<H: HttpClient>(
         folder_parent_id: folder_parent_id.map(String::from),
         resource_type_id,
         secrets,
-        expired: expiry.and_then(|v| v.as_str().map(String::from)),
+        expired: expiry.and_then(|expiry| expiry.as_str().map(String::from)),
     };
 
     client.create_resource(&payload).await

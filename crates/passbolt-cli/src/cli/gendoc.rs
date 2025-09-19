@@ -49,31 +49,31 @@ fn generate_markdown(output_dir: &Path) -> Result<()> {
 }
 
 fn generate_man_pages(output_dir: &Path) -> Result<()> {
-    let cmd = Cli::command();
-    let root_name = cmd.get_name().to_string();
-    generate_man_recursive(&cmd, output_dir, &[root_name])
+    let command = Cli::command();
+    let root_name = command.get_name().to_string();
+    generate_man_recursive(&command, output_dir, &[root_name])
 }
 
 fn generate_man_recursive(
-    cmd: &clap::Command,
+    command: &clap::Command,
     output_dir: &Path,
     ancestors: &[String],
 ) -> Result<()> {
     let name = ancestors.join("-");
-    let man = clap_mangen::Man::new(cmd.clone());
-    let mut buf = Vec::new();
-    man.render(&mut buf)?;
+    let man = clap_mangen::Man::new(command.clone());
+    let mut rendered = Vec::new();
+    man.render(&mut rendered)?;
     let path = output_dir.join(format!("{name}.1"));
-    std::fs::write(&path, &buf)?;
+    std::fs::write(&path, &rendered)?;
     println!("Written: {}", path.display());
 
-    for subcmd in cmd.get_subcommands() {
-        if subcmd.get_name() == "help" {
+    for subcommand in command.get_subcommands() {
+        if subcommand.get_name() == "help" {
             continue;
         }
-        let mut sub_ancestors = ancestors.to_vec();
-        sub_ancestors.push(subcmd.get_name().to_string());
-        generate_man_recursive(subcmd, output_dir, &sub_ancestors)?;
+        let mut subcommand_ancestors = ancestors.to_vec();
+        subcommand_ancestors.push(subcommand.get_name().to_string());
+        generate_man_recursive(subcommand, output_dir, &subcommand_ancestors)?;
     }
     Ok(())
 }

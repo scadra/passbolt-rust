@@ -209,7 +209,8 @@ pub struct User {
     pub profile: Option<UserProfile>,
     #[serde(default)]
     pub role: Option<Role>,
-    #[serde(default)]
+    /// Sent as `gpgkey` by the API, serialized as `gpg_key`.
+    #[serde(default, alias = "gpgkey")]
     pub gpg_key: Option<GpgKey>,
     #[serde(default)]
     pub groups_users: Vec<GroupUser>,
@@ -220,7 +221,7 @@ impl User {
     pub fn first_name(&self) -> &str {
         self.profile
             .as_ref()
-            .and_then(|p| p.first_name.as_deref())
+            .and_then(|profile| profile.first_name.as_deref())
             .unwrap_or("")
     }
 
@@ -228,7 +229,7 @@ impl User {
     pub fn last_name(&self) -> &str {
         self.profile
             .as_ref()
-            .and_then(|p| p.last_name.as_deref())
+            .and_then(|profile| profile.last_name.as_deref())
             .unwrap_or("")
     }
 
@@ -236,7 +237,7 @@ impl User {
     pub fn role_name(&self) -> &str {
         self.role
             .as_ref()
-            .and_then(|r| r.name.as_deref())
+            .and_then(|role| role.name.as_deref())
             .unwrap_or("")
     }
 }
@@ -469,17 +470,17 @@ pub fn build_share_changes(
 ) -> Vec<ShareChange> {
     user_ids
         .iter()
-        .map(|uid| ShareChange {
+        .map(|user_id| ShareChange {
             id: None,
             aro: "User".into(),
-            aro_foreign_key: uid.clone(),
+            aro_foreign_key: user_id.clone(),
             permission_type: Some(permission_type),
             delete: None,
         })
-        .chain(group_ids.iter().map(|gid| ShareChange {
+        .chain(group_ids.iter().map(|group_id| ShareChange {
             id: None,
             aro: "Group".into(),
-            aro_foreign_key: gid.clone(),
+            aro_foreign_key: group_id.clone(),
             permission_type: Some(permission_type),
             delete: None,
         }))
@@ -491,22 +492,23 @@ pub fn build_share_changes(
 /// The Passbolt API requires the existing permission `id` and `delete: true` to revoke.
 #[must_use]
 pub fn build_revoke_changes(
-    existing_perms: &[Permission],
+    existing_permissions: &[Permission],
     user_ids: &[String],
     group_ids: &[String],
 ) -> Vec<ShareChange> {
-    existing_perms
+    existing_permissions
         .iter()
-        .filter(|p| {
-            let fk = p.aro_foreign_key.as_deref().unwrap_or("");
-            user_ids.iter().any(|u| u == fk) || group_ids.iter().any(|g| g == fk)
+        .filter(|permission| {
+            let foreign_key = permission.aro_foreign_key.as_deref().unwrap_or("");
+            user_ids.iter().any(|user_id| user_id == foreign_key)
+                || group_ids.iter().any(|group_id| group_id == foreign_key)
         })
-        .filter_map(|p| {
-            let id = p.id.clone()?;
+        .filter_map(|permission| {
+            let id = permission.id.clone()?;
             Some(ShareChange {
                 id: Some(id),
-                aro: p.aro.clone().unwrap_or_default(),
-                aro_foreign_key: p.aro_foreign_key.clone().unwrap_or_default(),
+                aro: permission.aro.clone().unwrap_or_default(),
+                aro_foreign_key: permission.aro_foreign_key.clone().unwrap_or_default(),
                 permission_type: None,
                 delete: Some(true),
             })
@@ -665,6 +667,24 @@ pub struct FolderTreeNode {
 mod tests {
     use super::*;
 
+    // ─── User ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_user_gpgkey_alias() {
+        let user: User = serde_json::from_value(serde_json::json!({
+            "id": "u1",
+            "gpgkey": { "armored_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----" }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            user.gpg_key
+                .and_then(|gpg_key| gpg_key.armored_key)
+                .as_deref(),
+            Some("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+        );
+    }
+
     // ─── build_share_changes ─────────────────────────────────────────────────
 
     #[test]
@@ -672,9 +692,11 @@ mod tests {
         let users = vec!["u1".into(), "u2".into()];
         let changes = build_share_changes(&users, &[], 7);
         assert_eq!(changes.len(), 2);
-        assert!(changes.iter().all(|c| c.aro == "User"));
-        assert!(changes.iter().all(|c| c.permission_type == Some(7)));
-        assert!(changes.iter().all(|c| c.delete.is_none()));
+        assert!(changes.iter().all(|change| change.aro == "User"));
+        assert!(changes
+            .iter()
+            .all(|change| change.permission_type == Some(7)));
+        assert!(changes.iter().all(|change| change.delete.is_none()));
     }
 
     #[test]
@@ -702,7 +724,9 @@ mod tests {
         let users = vec!["u1".into(), "u2".into()];
         let groups = vec!["g1".into()];
         let changes = build_share_changes(&users, &groups, 7);
-        assert!(changes.iter().all(|c| c.permission_type == Some(7)));
+        assert!(changes
+            .iter()
+            .all(|change| change.permission_type == Some(7)));
     }
 
     // ─── build_revoke_changes ─────────────────────────────────────────────────
@@ -724,8 +748,8 @@ mod tests {
 
     #[test]
     fn test_revoke_user() {
-        let perms = vec![make_perm("perm-1", "User", "u1")];
-        let changes = build_revoke_changes(&perms, &["u1".into()], &[]);
+        let permissions = vec![make_perm("perm-1", "User", "u1")];
+        let changes = build_revoke_changes(&permissions, &["u1".into()], &[]);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].id, Some("perm-1".into()));
         assert_eq!(changes[0].delete, Some(true));
@@ -734,15 +758,15 @@ mod tests {
 
     #[test]
     fn test_revoke_unknown_ignored() {
-        let perms = vec![make_perm("perm-1", "User", "u1")];
-        let changes = build_revoke_changes(&perms, &["u99".into()], &[]);
+        let permissions = vec![make_perm("perm-1", "User", "u1")];
+        let changes = build_revoke_changes(&permissions, &["u99".into()], &[]);
         assert!(changes.is_empty());
     }
 
     #[test]
     fn test_revoke_group() {
-        let perms = vec![make_perm("perm-2", "Group", "g1")];
-        let changes = build_revoke_changes(&perms, &[], &["g1".into()]);
+        let permissions = vec![make_perm("perm-2", "Group", "g1")];
+        let changes = build_revoke_changes(&permissions, &[], &["g1".into()]);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].aro, "Group");
         assert_eq!(changes[0].delete, Some(true));
@@ -750,7 +774,7 @@ mod tests {
 
     #[test]
     fn test_revoke_perm_without_id_skipped() {
-        let perm = Permission {
+        let permission = Permission {
             id: None,
             aco: None,
             aco_foreign_key: None,
@@ -762,7 +786,7 @@ mod tests {
             user: None,
             group: None,
         };
-        let changes = build_revoke_changes(&[perm], &["u1".into()], &[]);
+        let changes = build_revoke_changes(&[permission], &["u1".into()], &[]);
         assert!(changes.is_empty());
     }
 }

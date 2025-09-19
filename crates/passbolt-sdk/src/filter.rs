@@ -31,57 +31,57 @@ pub enum FilterOp {
 }
 
 impl Filter {
-    pub fn parse(expr: &str) -> anyhow::Result<Self> {
+    pub fn parse(expression: &str) -> anyhow::Result<Self> {
         // Check operators in descending specificity
-        if let Some(pos) = expr.find("~=") {
+        if let Some(position) = expression.find("~=") {
             return Ok(Self {
-                field: expr[..pos].trim().to_lowercase(),
+                field: expression[..position].trim().to_lowercase(),
                 op: FilterOp::Contains,
-                value: expr[pos + 2..].trim().to_string(),
+                value: expression[position + 2..].trim().to_string(),
             });
         }
-        if let Some(pos) = expr.find("^=") {
+        if let Some(position) = expression.find("^=") {
             return Ok(Self {
-                field: expr[..pos].trim().to_lowercase(),
+                field: expression[..position].trim().to_lowercase(),
                 op: FilterOp::StartsWith,
-                value: expr[pos + 2..].trim().to_string(),
+                value: expression[position + 2..].trim().to_string(),
             });
         }
-        if let Some(pos) = expr.find("$=") {
+        if let Some(position) = expression.find("$=") {
             return Ok(Self {
-                field: expr[..pos].trim().to_lowercase(),
+                field: expression[..position].trim().to_lowercase(),
                 op: FilterOp::EndsWith,
-                value: expr[pos + 2..].trim().to_string(),
+                value: expression[position + 2..].trim().to_string(),
             });
         }
-        if let Some(pos) = expr.find("!=") {
+        if let Some(position) = expression.find("!=") {
             return Ok(Self {
-                field: expr[..pos].trim().to_lowercase(),
+                field: expression[..position].trim().to_lowercase(),
                 op: FilterOp::NotEq,
-                value: expr[pos + 2..].trim().to_string(),
+                value: expression[position + 2..].trim().to_string(),
             });
         }
-        if let Some(pos) = expr.find('=') {
+        if let Some(position) = expression.find('=') {
             return Ok(Self {
-                field: expr[..pos].trim().to_lowercase(),
+                field: expression[..position].trim().to_lowercase(),
                 op: FilterOp::Eq,
-                value: expr[pos + 1..].trim().to_string(),
+                value: expression[position + 1..].trim().to_string(),
             });
         }
-        anyhow::bail!("Invalid filter expression: {expr}  (expected: field=value)")
+        anyhow::bail!("Invalid filter expression: {expression}  (expected: field=value)")
     }
 
     /// Test a field value string against this filter.
     #[must_use]
     pub fn matches_str(&self, candidate: &str) -> bool {
-        let val = self.value.to_lowercase();
-        let cand = candidate.to_lowercase();
+        let value = self.value.to_lowercase();
+        let candidate = candidate.to_lowercase();
         match self.op {
-            FilterOp::Eq => cand == val,
-            FilterOp::NotEq => cand != val,
-            FilterOp::Contains => cand.contains(&val),
-            FilterOp::StartsWith => cand.starts_with(&val),
-            FilterOp::EndsWith => cand.ends_with(&val),
+            FilterOp::Eq => candidate == value,
+            FilterOp::NotEq => candidate != value,
+            FilterOp::Contains => candidate.contains(&value),
+            FilterOp::StartsWith => candidate.starts_with(&value),
+            FilterOp::EndsWith => candidate.ends_with(&value),
         }
     }
 }
@@ -93,9 +93,11 @@ pub fn apply_filters<S: std::hash::BuildHasher>(
     filters: &[Filter],
     fields: &std::collections::HashMap<String, String, S>,
 ) -> bool {
-    filters
-        .iter()
-        .all(|f| fields.get(&f.field).is_some_and(|v| f.matches_str(v)))
+    filters.iter().all(|filter| {
+        fields
+            .get(&filter.field)
+            .is_some_and(|value| filter.matches_str(value))
+    })
 }
 
 /// Generic filter: extract a field map per entity via `fields`, then apply `filters`.
@@ -110,7 +112,7 @@ where
     }
     entities
         .into_iter()
-        .filter(|e| apply_filters(filters, &fields(e)))
+        .filter(|entity| apply_filters(filters, &fields(entity)))
         .collect()
 }
 
@@ -123,42 +125,42 @@ mod tests {
 
     #[test]
     fn test_parse_eq() {
-        let f = Filter::parse("name=foo").unwrap();
-        assert_eq!(f.field, "name");
-        assert!(matches!(f.op, FilterOp::Eq));
-        assert_eq!(f.value, "foo");
+        let filter = Filter::parse("name=foo").unwrap();
+        assert_eq!(filter.field, "name");
+        assert!(matches!(filter.op, FilterOp::Eq));
+        assert_eq!(filter.value, "foo");
     }
 
     #[test]
     fn test_parse_contains() {
-        let f = Filter::parse("name~=foo").unwrap();
-        assert_eq!(f.field, "name");
-        assert!(matches!(f.op, FilterOp::Contains));
-        assert_eq!(f.value, "foo");
+        let filter = Filter::parse("name~=foo").unwrap();
+        assert_eq!(filter.field, "name");
+        assert!(matches!(filter.op, FilterOp::Contains));
+        assert_eq!(filter.value, "foo");
     }
 
     #[test]
     fn test_parse_startswith() {
-        let f = Filter::parse("name^=foo").unwrap();
-        assert_eq!(f.field, "name");
-        assert!(matches!(f.op, FilterOp::StartsWith));
-        assert_eq!(f.value, "foo");
+        let filter = Filter::parse("name^=foo").unwrap();
+        assert_eq!(filter.field, "name");
+        assert!(matches!(filter.op, FilterOp::StartsWith));
+        assert_eq!(filter.value, "foo");
     }
 
     #[test]
     fn test_parse_endswith() {
-        let f = Filter::parse("name$=foo").unwrap();
-        assert_eq!(f.field, "name");
-        assert!(matches!(f.op, FilterOp::EndsWith));
-        assert_eq!(f.value, "foo");
+        let filter = Filter::parse("name$=foo").unwrap();
+        assert_eq!(filter.field, "name");
+        assert!(matches!(filter.op, FilterOp::EndsWith));
+        assert_eq!(filter.value, "foo");
     }
 
     #[test]
     fn test_parse_noteq() {
-        let f = Filter::parse("name!=foo").unwrap();
-        assert_eq!(f.field, "name");
-        assert!(matches!(f.op, FilterOp::NotEq));
-        assert_eq!(f.value, "foo");
+        let filter = Filter::parse("name!=foo").unwrap();
+        assert_eq!(filter.field, "name");
+        assert!(matches!(filter.op, FilterOp::NotEq));
+        assert_eq!(filter.value, "foo");
     }
 
     #[test]
@@ -168,86 +170,88 @@ mod tests {
 
     #[test]
     fn test_parse_field_trimmed_lowercase() {
-        let f = Filter::parse("  Name  =bar").unwrap();
-        assert_eq!(f.field, "name");
-        assert_eq!(f.value, "bar");
+        let filter = Filter::parse("  Name  =bar").unwrap();
+        assert_eq!(filter.field, "name");
+        assert_eq!(filter.value, "bar");
     }
 
     // ─── Filter::matches_str ──────────────────────────────────────────────────
 
     #[test]
     fn test_matches_eq_case_insensitive() {
-        let f = Filter::parse("name=FOO").unwrap();
-        assert!(f.matches_str("foo"));
-        assert!(f.matches_str("FOO"));
-        assert!(!f.matches_str("bar"));
+        let filter = Filter::parse("name=FOO").unwrap();
+        assert!(filter.matches_str("foo"));
+        assert!(filter.matches_str("FOO"));
+        assert!(!filter.matches_str("bar"));
     }
 
     #[test]
     fn test_matches_contains() {
-        let f = Filter::parse("name~=oo").unwrap();
-        assert!(f.matches_str("foobar"));
-        assert!(!f.matches_str("bar"));
+        let filter = Filter::parse("name~=oo").unwrap();
+        assert!(filter.matches_str("foobar"));
+        assert!(!filter.matches_str("bar"));
     }
 
     #[test]
     fn test_matches_startswith() {
-        let f = Filter::parse("name^=foo").unwrap();
-        assert!(f.matches_str("foobar"));
-        assert!(!f.matches_str("barfoo"));
+        let filter = Filter::parse("name^=foo").unwrap();
+        assert!(filter.matches_str("foobar"));
+        assert!(!filter.matches_str("barfoo"));
     }
 
     #[test]
     fn test_matches_endswith() {
-        let f = Filter::parse("name$=bar").unwrap();
-        assert!(f.matches_str("foobar"));
-        assert!(!f.matches_str("barfoo"));
+        let filter = Filter::parse("name$=bar").unwrap();
+        assert!(filter.matches_str("foobar"));
+        assert!(!filter.matches_str("barfoo"));
     }
 
     #[test]
     fn test_matches_not_eq() {
-        let f = Filter::parse("name!=foo").unwrap();
-        assert!(f.matches_str("bar"));
-        assert!(!f.matches_str("foo"));
+        let filter = Filter::parse("name!=foo").unwrap();
+        assert!(filter.matches_str("bar"));
+        assert!(!filter.matches_str("foo"));
     }
 
     // ─── filter_entities ─────────────────────────────────────────────────────
 
     fn make_fields(name: &str) -> HashMap<String, String> {
-        let mut m = HashMap::new();
-        m.insert("name".into(), name.into());
-        m
+        let mut fields = HashMap::new();
+        fields.insert("name".into(), name.into());
+        fields
     }
 
     #[test]
     fn test_filter_entities_empty_filters_returns_all() {
         let items = vec!["alpha", "beta", "gamma"];
-        let result = filter_entities(items.clone(), &[], |s| make_fields(s));
+        let result = filter_entities(items.clone(), &[], |name| make_fields(name));
         assert_eq!(result, items);
     }
 
     #[test]
     fn test_filter_entities_no_match() {
         let items = vec!["alpha", "beta"];
-        let f = Filter::parse("name=zzz").unwrap();
-        let result = filter_entities(items, &[f], |s| make_fields(s));
+        let filter = Filter::parse("name=zzz").unwrap();
+        let result = filter_entities(items, &[filter], |name| make_fields(name));
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_filter_entities_partial_match() {
         let items = vec!["alpha", "beta", "alphabet"];
-        let f = Filter::parse("name^=alpha").unwrap();
-        let result = filter_entities(items, &[f], |s| make_fields(s));
+        let filter = Filter::parse("name^=alpha").unwrap();
+        let result = filter_entities(items, &[filter], |name| make_fields(name));
         assert_eq!(result, vec!["alpha", "alphabet"]);
     }
 
     #[test]
     fn test_filter_entities_multiple_filters_and_semantics() {
         let items = vec!["foobar", "foo", "bar", "foobaz"];
-        let f1 = Filter::parse("name^=foo").unwrap();
-        let f2 = Filter::parse("name$=bar").unwrap();
-        let result = filter_entities(items, &[f1, f2], |s| make_fields(s));
+        let starts_with_foo = Filter::parse("name^=foo").unwrap();
+        let ends_with_bar = Filter::parse("name$=bar").unwrap();
+        let result = filter_entities(items, &[starts_with_foo, ends_with_bar], |name| {
+            make_fields(name)
+        });
         // Only "foobar" starts with "foo" AND ends with "bar"
         assert_eq!(result, vec!["foobar"]);
     }

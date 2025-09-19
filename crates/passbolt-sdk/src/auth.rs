@@ -60,41 +60,40 @@ pub async fn login<H: HttpClient>(
     });
     let json_bytes = serde_json::to_vec(&init_body)?;
 
-    let resp = http.post(&url, &[], &json_bytes).await?;
+    let response = http.post(&url, &[], &json_bytes).await?;
 
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+    let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
 
-    if resp.status >= 400 {
-        let msg = body
+    if response.status >= 400 {
+        let message = body
             .pointer("/header/message")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("Unknown error");
         return Err(AuthError::LoginFailed(format!(
-            "Login initiation failed ({}): {msg}",
-            resp.status
+            "Login initiation failed ({}): {message}",
+            response.status
         ))
         .into());
     }
 
     // Extract challenge from response header
-    let challenge_encoded = resp
+    let challenge_encoded = response
         .header("X-GPGAuth-User-Auth-Token")
         .ok_or_else(|| {
             AuthError::LoginFailed("Server did not return X-GPGAuth-User-Auth-Token header".into())
         })?
         .to_string();
 
-    // Percent-decode the header value; also convert `+` to space (form-encoding).
-    let encrypted_challenge = percent_decode_str(&challenge_encoded)
-        .decode_utf8_lossy()
-        .replace('+', " ");
+    let encrypted_challenge = decode_auth_token_header(&challenge_encoded)?;
 
     // Step 2: decrypt the challenge
-    let decrypted = decrypt_message(&encrypted_challenge, &private_key.key, passphrase)
-        .map_err(|e| AuthError::LoginFailed(format!("Failed to decrypt server challenge: {e}")))?;
+    let decrypted =
+        decrypt_message(&encrypted_challenge, &private_key.key, passphrase).map_err(|error| {
+            AuthError::LoginFailed(format!("Failed to decrypt server challenge: {error}"))
+        })?;
     let token = String::from_utf8(decrypted)
-        .map_err(|e| {
-            AuthError::LoginFailed(format!("Decrypted challenge is not valid UTF-8: {e}"))
+        .map_err(|error| {
+            AuthError::LoginFailed(format!("Decrypted challenge is not valid UTF-8: {error}"))
         })?
         .trim()
         .to_owned();
@@ -108,15 +107,15 @@ pub async fn login<H: HttpClient>(
     });
     let verify_bytes = serde_json::to_vec(&verify_body)?;
 
-    let verify_resp = http.post(&url, &[], &verify_bytes).await?;
+    let verify_response = http.post(&url, &[], &verify_bytes).await?;
 
     // Handle MFA challenge (403)
-    if verify_resp.status == 403 {
-        let mfa_body: Value = serde_json::from_slice(&verify_resp.body).unwrap_or(Value::Null);
+    if verify_response.status == 403 {
+        let mfa_body: Value = serde_json::from_slice(&verify_response.body).unwrap_or(Value::Null);
         let is_mfa = mfa_body
             .pointer("/header/message")
-            .and_then(|v| v.as_str())
-            .is_none_or(|m| m.to_lowercase().contains("mfa"));
+            .and_then(|value| value.as_str())
+            .is_none_or(|message| message.to_lowercase().contains("mfa"));
 
         if is_mfa {
             if let Some(provider) = mfa_provider {
@@ -124,27 +123,39 @@ pub async fn login<H: HttpClient>(
             }
             return Err(AuthError::MfaRequired.into());
         }
-        let msg = mfa_body
+        let message = mfa_body
             .pointer("/header/message")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("Forbidden");
-        return Err(AuthError::LoginFailed(format!("Login failed (403): {msg}")).into());
+        return Err(AuthError::LoginFailed(format!("Login failed (403): {message}")).into());
     }
 
-    if verify_resp.status >= 400 {
-        let err_body: Value = serde_json::from_slice(&verify_resp.body).unwrap_or(Value::Null);
-        let msg = err_body
+    if verify_response.status >= 400 {
+        let error_body: Value =
+            serde_json::from_slice(&verify_response.body).unwrap_or(Value::Null);
+        let message = error_body
             .pointer("/header/message")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("Unknown error");
         return Err(AuthError::LoginFailed(format!(
-            "Login verification failed ({}): {msg}",
-            verify_resp.status
+            "Login verification failed ({}): {message}",
+            verify_response.status
         ))
         .into());
     }
 
-    extract_auth_tokens(&verify_resp)
+    extract_auth_tokens(&verify_response)
+}
+
+/// Inverse of PHP `quotemeta(urlencode($armored))`, how the server sends the challenge.
+fn decode_auth_token_header(encoded: &str) -> Result<String, AuthError> {
+    let unquoted = encoded.replace('\\', "").replace('+', " ");
+    percent_decode_str(&unquoted)
+        .decode_utf8()
+        .map(Into::into)
+        .map_err(|error| {
+            AuthError::LoginFailed(format!("Invalid X-GPGAuth-User-Auth-Token header: {error}"))
+        })
 }
 
 /// Handle MFA by using the provided `MfaProvider` to obtain TOTP codes.
@@ -162,22 +173,22 @@ async fn handle_mfa_login<H: HttpClient>(
         let body =
             serde_json::to_vec(&serde_json::json!({ "totp": code, "remember_device": false }))?;
 
-        let resp = http.post(&mfa_url, &[], &body).await?;
+        let response = http.post(&mfa_url, &[], &body).await?;
 
-        if resp.status < 400 {
-            return extract_auth_tokens(&resp);
+        if response.status < 400 {
+            return extract_auth_tokens(&response);
         }
 
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-        let msg = resp_body
+        let response_body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+        let message = response_body
             .pointer("/header/message")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("MFA failed");
 
         if attempt + 1 >= max_attempts {
             return Err(AuthError::MfaFailed {
                 attempts: max_attempts,
-                message: msg.to_string(),
+                message: message.to_string(),
             }
             .into());
         }
@@ -187,21 +198,21 @@ async fn handle_mfa_login<H: HttpClient>(
 }
 
 /// Extract CSRF token and `user_id` from a successful login/MFA response.
-fn extract_auth_tokens(resp: &crate::http::HttpResponse) -> Result<AuthTokens, PassboltError> {
-    let csrf_from_header = resp.header("X-CSRF-Token").map(str::to_owned);
+fn extract_auth_tokens(response: &crate::http::HttpResponse) -> Result<AuthTokens, PassboltError> {
+    let csrf_from_header = response.header("X-CSRF-Token").map(str::to_owned);
 
     // Check for csrfToken cookie in our custom set-cookie-name headers
-    let csrf_from_cookie = resp
+    let csrf_from_cookie = response
         .headers_by_name("set-cookie-name")
         .iter()
-        .find(|v| v.starts_with("csrfToken="))
-        .map(|v| v.strip_prefix("csrfToken=").unwrap_or("").to_owned());
+        .find(|cookie| cookie.starts_with("csrfToken="))
+        .map(|cookie| cookie.strip_prefix("csrfToken=").unwrap_or("").to_owned());
 
-    let body: Value = serde_json::from_slice(&resp.body)?;
+    let body: Value = serde_json::from_slice(&response.body)?;
 
     let csrf_from_body = body
         .pointer("/body/csrfToken")
-        .and_then(|v| v.as_str())
+        .and_then(|value| value.as_str())
         .map(str::to_owned);
 
     let csrf_token = csrf_from_header
@@ -211,7 +222,7 @@ fn extract_auth_tokens(resp: &crate::http::HttpResponse) -> Result<AuthTokens, P
 
     let user_id = body
         .pointer("/body/user/id")
-        .and_then(|v| v.as_str())
+        .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_owned();
 
@@ -229,30 +240,30 @@ pub async fn verify_server<H: HttpClient>(
     passphrase: &str,
 ) -> Result<(String, String), PassboltError> {
     let url = format!("{base_url}/auth/verify.json");
-    let resp = http.get(&url, &[]).await?;
+    let response = http.get(&url, &[]).await?;
 
-    let body: Value = serde_json::from_slice(&resp.body)?;
+    let body: Value = serde_json::from_slice(&response.body)?;
 
     let fingerprint = body
         .pointer("/body/fingerprint")
-        .and_then(|v| v.as_str())
+        .and_then(|value| value.as_str())
         .ok_or_else(|| AuthError::LoginFailed("Server did not return fingerprint".into()))?
         .to_string();
 
-    let enc_challenge = body
+    let encrypted_challenge = body
         .pointer("/body/challenge")
-        .and_then(|v| v.as_str())
+        .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
 
-    let decrypted_token = if enc_challenge.is_empty() {
+    let decrypted_token = if encrypted_challenge.is_empty() {
         String::new()
     } else {
-        let dec = decrypt_message(&enc_challenge, &private_key.key, passphrase)
-            .map_err(|e| CryptoError::Decrypt(format!("server verify challenge: {e}")))?;
-        String::from_utf8(dec)
-            .map_err(|e| {
-                PassboltError::Other(format!("Server verify token is not valid UTF-8: {e}"))
+        let decrypted = decrypt_message(&encrypted_challenge, &private_key.key, passphrase)
+            .map_err(|error| CryptoError::Decrypt(format!("server verify challenge: {error}")))?;
+        String::from_utf8(decrypted)
+            .map_err(|error| {
+                PassboltError::Other(format!("Server verify token is not valid UTF-8: {error}"))
             })?
             .trim()
             .to_string()
@@ -290,4 +301,25 @@ pub async fn check_server_identity<H: HttpClient>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::quotemeta_space("BEGIN\\+PGP\\+MESSAGE", "BEGIN PGP MESSAGE")]
+    #[case::quotemeta_dot("Version%3A\\+1\\.0", "Version: 1.0")]
+    #[case::base64_plus("ab%2Bcd%2F%3D", "ab+cd/=")]
+    #[case::literal_backslash("a%5Cb", "a\\b")]
+    #[case::newline("line1%0Aline2", "line1\nline2")]
+    fn test_decode_auth_token_header(#[case] header: &str, #[case] expected: &str) {
+        assert_eq!(decode_auth_token_header(header).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_decode_auth_token_header_invalid_utf8() {
+        assert!(decode_auth_token_header("%FF").is_err());
+    }
 }

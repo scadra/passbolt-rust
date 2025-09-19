@@ -41,9 +41,7 @@ You can try a demo of passbolt at [https://demo.passbolt.com](https://demo.passb
 A fast, secure CLI and SDK for [Passbolt](https://www.passbolt.com/) — written in Rust.
 
 Full alternative to [go-passbolt-cli](https://github.com/passbolt/go-passbolt-cli) with no OpenSSL dependency (pure Rust TLS + GPG).
-The workspace also ships the `passbolt-sdk` library and its WASM and FFI bindings (see [docs/sdk-specs](docs/sdk-specs/README.md)).
-
-> Known gaps with go-passbolt / go-passbolt-cli are tracked in [docs/PARITY-GO.md](docs/PARITY-GO.md).
+The workspace also ships the `passbolt-sdk` library and its WASM and FFI bindings.
 
 # Contributing
 

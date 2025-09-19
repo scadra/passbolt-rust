@@ -21,7 +21,7 @@
 *.gpg
 *.pem
 *.key
-config.toml
+/config.toml
 
 # Coverage & profiling #
 ######################
@@ -39,3 +39,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Test-only PGP fixtures (generated, no real secret)
+!crates/*/tests/fixtures/keys/*.asc

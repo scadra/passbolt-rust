@@ -27,17 +27,17 @@ pub fn build_group_members(manager_ids: &[String], member_ids: &[String]) -> Vec
     let manager_set: HashSet<&str> = manager_ids.iter().map(String::as_str).collect();
     manager_ids
         .iter()
-        .map(|uid| GroupUserPayload {
-            user_id: uid.clone(),
+        .map(|user_id| GroupUserPayload {
+            user_id: user_id.clone(),
             is_admin: true,
             delete: None,
         })
         .chain(
             member_ids
                 .iter()
-                .filter(|uid| !manager_set.contains(uid.as_str()))
-                .map(|uid| GroupUserPayload {
-                    user_id: uid.clone(),
+                .filter(|user_id| !manager_set.contains(user_id.as_str()))
+                .map(|user_id| GroupUserPayload {
+                    user_id: user_id.clone(),
                     is_admin: false,
                     delete: None,
                 }),

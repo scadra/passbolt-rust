@@ -45,21 +45,21 @@ impl fmt::Display for PassboltFfiError {
 impl From<PassboltError> for PassboltFfiError {
     fn from(e: PassboltError) -> Self {
         match e {
-            PassboltError::Transport(t) => Self::Transport {
-                message: t.to_string(),
+            PassboltError::Transport(transport_error) => Self::Transport {
+                message: transport_error.to_string(),
             },
-            PassboltError::Auth(a) => Self::Auth {
-                message: a.to_string(),
+            PassboltError::Auth(auth_error) => Self::Auth {
+                message: auth_error.to_string(),
             },
-            PassboltError::Crypto(c) => Self::Crypto {
-                message: c.to_string(),
+            PassboltError::Crypto(crypto_error) => Self::Crypto {
+                message: crypto_error.to_string(),
             },
             PassboltError::Api(ApiError {
                 status, message, ..
             }) => Self::Api { status, message },
-            PassboltError::NotFound(m) => Self::NotFound { message: m },
-            PassboltError::Config(m) => Self::Config { message: m },
-            PassboltError::InvalidArgument(m) => Self::InvalidArgument { message: m },
+            PassboltError::NotFound(message) => Self::NotFound { message },
+            PassboltError::Config(message) => Self::Config { message },
+            PassboltError::InvalidArgument(message) => Self::InvalidArgument { message },
             _ => Self::Other {
                 message: e.to_string(),
             },

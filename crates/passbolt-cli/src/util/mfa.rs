@@ -21,7 +21,7 @@ pub struct TerminalMfaProvider;
 impl MfaProvider for TerminalMfaProvider {
     fn get_totp_code(&self) -> Result<String, PassboltError> {
         rpassword::prompt_password("TOTP code: ")
-            .map_err(|e| PassboltError::Other(format!("Failed to read TOTP code: {e}")))
+            .map_err(|error| PassboltError::Other(format!("Failed to read TOTP code: {error}")))
     }
 }
 
@@ -43,14 +43,16 @@ fn generate_totp(secret: &str, offset_secs: i64) -> Result<String, PassboltError
 
     let secret_bytes = Secret::Encoded(secret.to_string())
         .to_bytes()
-        .map_err(|e| PassboltError::Other(format!("Invalid TOTP secret (must be base32): {e}")))?;
+        .map_err(|error| {
+            PassboltError::Other(format!("Invalid TOTP secret (must be base32): {error}"))
+        })?;
 
     let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
-        .map_err(|e| PassboltError::Other(format!("Failed to create TOTP: {e}")))?;
+        .map_err(|error| PassboltError::Other(format!("Failed to create TOTP: {error}")))?;
 
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| PassboltError::Other(format!("System clock error: {e}")))?
+        .map_err(|error| PassboltError::Other(format!("System clock error: {error}")))?
         .as_secs();
 
     // Safe: now_secs (epoch seconds) fits in i64 until year 292 billion
