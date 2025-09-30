@@ -67,6 +67,7 @@ struct State {
     mfa_code: Option<String>,
     mfa_verified: bool,
     no_csrf_cookie: bool,
+    csrf_cookie_sent: bool,
 }
 
 /// Clones share their state: keep one to inspect what the SDK sent.
@@ -191,7 +192,25 @@ impl FakePassbolt {
                     &data::mfa_error(),
                 )
             }
-            _ => self.canned_response(method, path),
+            _ => {
+                let mut response = self.canned_response(method, path);
+                if method == "GET" {
+                    self.set_csrf_cookie(&mut response);
+                }
+                response
+            }
+        }
+    }
+
+    /// Like `CsrfProtectionMiddleware`: the cookie comes with the first GET, not with login.
+    fn set_csrf_cookie(&self, response: &mut HttpResponse) {
+        let mut state = self.state.lock().unwrap();
+        if !state.no_csrf_cookie && !state.csrf_cookie_sent {
+            state.csrf_cookie_sent = true;
+            // What NativeHttpClient exposes for the `csrfToken` cookie.
+            response
+                .headers
+                .push(("set-cookie-name".into(), format!("csrfToken={CSRF_TOKEN}")));
         }
     }
 
@@ -260,10 +279,7 @@ impl FakePassbolt {
             return response;
         };
 
-        let (expected_token, no_csrf_cookie) = {
-            let state = self.state.lock().unwrap();
-            (state.login_token.clone(), state.no_csrf_cookie)
-        };
+        let expected_token = self.state.lock().unwrap().login_token.clone();
         if expected_token.as_deref() != Some(user_token_result) {
             return json_response(400, "The authentication failed.", URL, &Value::Null);
         }
@@ -276,12 +292,6 @@ impl FakePassbolt {
         response
             .headers
             .push(("X-GPGAuth-Authenticated".into(), "true".into()));
-        if !no_csrf_cookie {
-            // What NativeHttpClient exposes for the `csrfToken` cookie.
-            response
-                .headers
-                .push(("set-cookie-name".into(), format!("csrfToken={CSRF_TOKEN}")));
-        }
         response
     }
 

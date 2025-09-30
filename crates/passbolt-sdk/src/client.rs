@@ -139,37 +139,35 @@ impl<H: HttpClient> PassboltSdk<H> {
         )
         .await?;
 
-        let csrf_token = std::mem::take(&mut tokens.csrf_token);
-        let mut user_id = std::mem::take(&mut tokens.user_id);
-
         let mut client = Self {
             http,
             base_url,
-            csrf_token,
+            csrf_token: std::mem::take(&mut tokens.csrf_token),
             private_key,
             passphrase,
-            user_id: String::new(),
+            user_id: std::mem::take(&mut tokens.user_id),
             metadata_private_key: OnceLock::new(),
         };
 
-        if user_id.is_empty() {
-            user_id = client.fetch_user_id().await?;
-        }
-
+        // Login is exempt from CSRF: the token cookie comes with this first GET.
+        let (user_id, csrf_token) = client.fetch_current_user().await?;
         client.user_id = user_id;
+        if let Some(csrf_token) = csrf_token {
+            client.csrf_token = csrf_token;
+        }
         Ok(client)
     }
 
     /// Fetch current user ID via GET /users/me.json (post-login verify).
-    async fn fetch_user_id(&self) -> Result<String, PassboltError> {
-        let current_user: User =
-            self.get("/users/me.json?contain[gpgkey]=1")
-                .await
-                .map_err(|error| {
-                    PassboltError::from(AuthError::LoginFailed(format!(
-                        "Failed to fetch current user info: {error}"
-                    )))
-                })?;
+    /// Current user id and the CSRF cookie set by `/users/me.json`.
+    async fn fetch_current_user(&self) -> Result<(String, Option<String>), PassboltError> {
+        let url = format!("{}/users/me.json?contain[gpgkey]=1", self.base_url);
+        let response = self.http.get(&url, &[]).await?;
+        let current_user: User = self.parse_response(&response).map_err(|error| {
+            PassboltError::from(AuthError::LoginFailed(format!(
+                "Failed to fetch current user info: {error}"
+            )))
+        })?;
 
         // Cross-check: encrypt random bytes with server's copy of our public key,
         // then decrypt with our private key.
@@ -192,7 +190,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             }
         }
 
-        Ok(current_user.id)
+        Ok((current_user.id, auth::csrf_cookie(&response)))
     }
 
     /// Terminate the server-side session.
