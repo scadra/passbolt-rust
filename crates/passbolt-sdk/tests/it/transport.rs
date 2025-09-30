@@ -22,6 +22,7 @@ fn native_client() -> NativeHttpClient {
         client_cert_pem: None,
         client_key_pem: None,
         proxy_url: None,
+        resolve: Vec::new(),
     })
     .unwrap()
 }

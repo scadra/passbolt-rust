@@ -127,6 +127,9 @@ fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> Result<()> {
     if let Some(value) = &cli.proxy {
         config.proxy.clone_from(value);
     }
+    if let Some(value) = &cli.resolve {
+        config.resolve.clone_from(value);
+    }
     if let Some(value) = &cli.timeout {
         config.timeout.clone_from(value);
     }

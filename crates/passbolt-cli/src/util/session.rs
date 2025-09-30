@@ -20,26 +20,7 @@ pub type Client = passbolt_sdk::PassboltSdk<passbolt_sdk::NativeHttpClient>;
 pub async fn get_client(config: &Config) -> Result<Client> {
     let sdk_config = config.to_sdk_config()?;
 
-    let http_config = passbolt_sdk::NativeHttpConfig {
-        tls_skip_verify: sdk_config.tls_skip_verify,
-        client_cert_pem: if sdk_config.tls_client_cert.is_empty() {
-            None
-        } else {
-            Some(sdk_config.tls_client_cert.as_bytes().to_vec())
-        },
-        client_key_pem: if sdk_config.tls_client_private_key.is_empty() {
-            None
-        } else {
-            Some(sdk_config.tls_client_private_key.as_bytes().to_vec())
-        },
-        proxy_url: if sdk_config.proxy.is_empty() {
-            None
-        } else {
-            Some(sdk_config.proxy.clone())
-        },
-    };
-
-    let http = passbolt_sdk::NativeHttpClient::new(&http_config)?;
+    let http = passbolt_sdk::NativeHttpClient::new(&config.http_config()?)?;
 
     // Build MFA provider from config
     let mfa_provider: Option<Box<dyn passbolt_sdk::MfaProvider>> =

@@ -21,18 +21,7 @@ pub struct VerifyArgs {}
 pub async fn run(_args: &VerifyArgs, config: &mut Config) -> Result<()> {
     let private_key = passbolt_sdk::crypto::parse_private_key(&config.private_key_text()?)?;
 
-    // Build a temporary HTTP client just for verification
-    let http_config = passbolt_sdk::NativeHttpConfig {
-        tls_skip_verify: config.tls_skip_verify,
-        client_cert_pem: None,
-        client_key_pem: None,
-        proxy_url: if config.proxy.is_empty() {
-            None
-        } else {
-            Some(config.proxy.clone())
-        },
-    };
-    let http = passbolt_sdk::NativeHttpClient::new(&http_config)?;
+    let http = passbolt_sdk::NativeHttpClient::new(&config.http_config()?)?;
 
     let (fingerprint, token) = passbolt_sdk::auth::verify_server(
         &http,
