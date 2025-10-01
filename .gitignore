@@ -16,6 +16,7 @@
 # Secrets & exports (never commit) #
 ######################
 .env
+.env.e2e
 *.kdbx
 *.asc
 *.gpg
