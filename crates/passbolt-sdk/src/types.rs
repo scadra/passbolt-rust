@@ -37,6 +37,8 @@ pub struct PaginationInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
     pub id: String,
+    /// Absent for v5 resources: the name is in the encrypted metadata.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub username: Option<String>,

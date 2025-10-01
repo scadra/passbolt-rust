@@ -10,6 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use std::net::SocketAddr;
+
 use reqwest::{
     header::{self, HeaderMap, HeaderValue},
     Client, ClientBuilder,
@@ -24,6 +26,8 @@ pub struct NativeHttpConfig {
     pub client_cert_pem: Option<Vec<u8>>,
     pub client_key_pem: Option<Vec<u8>>,
     pub proxy_url: Option<String>,
+    /// Host names pinned to an address, like `curl --resolve`.
+    pub resolve: Vec<(String, SocketAddr)>,
 }
 
 /// Native HTTP client backed by `reqwest`.
@@ -60,6 +64,10 @@ impl NativeHttpClient {
                 })?;
                 builder = builder.proxy(proxy);
             }
+        }
+
+        for (host, address) in &config.resolve {
+            builder = builder.resolve(host, *address);
         }
 
         // Default headers

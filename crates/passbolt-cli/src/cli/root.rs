@@ -95,6 +95,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "PASSBOLT_PROXY")]
     pub proxy: Option<String>,
 
+    /// Pin a host name to an address: `host:port:address` (like `curl --resolve`)
+    #[arg(long, global = true, env = "PASSBOLT_RESOLVE")]
+    pub resolve: Option<String>,
+
     /// Request timeout (e.g. 1m, 30s)
     #[arg(long, global = true, default_value = "1m", env = "PASSBOLT_TIMEOUT")]
     pub timeout: Option<String>,

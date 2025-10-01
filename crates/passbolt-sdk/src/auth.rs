@@ -197,16 +197,20 @@ async fn handle_mfa_login<H: HttpClient>(
     unreachable!()
 }
 
+/// The `csrfToken` cookie, which the server only sets on a GET without it.
+pub(crate) fn csrf_cookie(response: &crate::http::HttpResponse) -> Option<String> {
+    response
+        .headers_by_name("set-cookie-name")
+        .iter()
+        .find_map(|cookie| cookie.strip_prefix("csrfToken="))
+        .map(str::to_owned)
+}
+
 /// Extract CSRF token and `user_id` from a successful login/MFA response.
 fn extract_auth_tokens(response: &crate::http::HttpResponse) -> Result<AuthTokens, PassboltError> {
     let csrf_from_header = response.header("X-CSRF-Token").map(str::to_owned);
 
-    // Check for csrfToken cookie in our custom set-cookie-name headers
-    let csrf_from_cookie = response
-        .headers_by_name("set-cookie-name")
-        .iter()
-        .find(|cookie| cookie.starts_with("csrfToken="))
-        .map(|cookie| cookie.strip_prefix("csrfToken=").unwrap_or("").to_owned());
+    let csrf_from_cookie = csrf_cookie(response);
 
     let body: Value = serde_json::from_slice(&response.body)?;
 

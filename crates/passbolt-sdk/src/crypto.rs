@@ -65,11 +65,11 @@ pub fn decrypt_message(
         .decrypt(|| passphrase.to_string(), &[private_key])
         .map_err(|error| CryptoError::Decrypt(format!("{error}")))?;
 
-    let content = decrypted
-        .get_literal()
-        .ok_or_else(|| CryptoError::Decrypt("no literal content".into()))?;
-
-    Ok(content.data().to_vec())
+    // GnuPG (the Passbolt server) compresses by default.
+    decrypted
+        .get_content()
+        .map_err(|error| CryptoError::Decrypt(format!("decompress: {error}")))?
+        .ok_or_else(|| CryptoError::Decrypt("no literal content".into()))
 }
 
 pub fn encrypt_message(
@@ -155,6 +155,29 @@ mod tests {
         assert_eq!(
             decrypt_message(&armored, &metadata_secret, "").unwrap(),
             b"both"
+        );
+    }
+
+    #[test]
+    fn test_decrypt_compressed_message() {
+        use pgp::crypto::sym::SymmetricKeyAlgorithm;
+        use pgp::types::CompressionAlgorithm;
+        let (secret, public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+        let armored = Message::new_literal_bytes("", b"gpgauthv1.3.0")
+            .compress(CompressionAlgorithm::ZLIB)
+            .unwrap()
+            .encrypt_to_keys_seipdv1(
+                rand::thread_rng(),
+                SymmetricKeyAlgorithm::AES256,
+                &[&public],
+            )
+            .unwrap()
+            .to_armored_string(ArmorOptions::default())
+            .unwrap();
+
+        assert_eq!(
+            decrypt_message(&armored, &secret, "").unwrap(),
+            b"gpgauthv1.3.0"
         );
     }
 

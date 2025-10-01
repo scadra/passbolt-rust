@@ -27,6 +27,7 @@
 //!     client_cert_pem: None,
 //!     client_key_pem: None,
 //!     proxy_url: None,
+//!     resolve: Vec::new(),
 //! };
 //! let http = NativeHttpClient::new(&http_config)?;
 //! // let client = PassboltSdk::login(http, &sdk_config, None, 3).await?;

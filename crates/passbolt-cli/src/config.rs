@@ -67,6 +67,32 @@ pub struct Config {
     /// HTTP/HTTPS proxy URL (empty = no proxy)
     #[serde(default)]
     pub proxy: String,
+    /// `host:port:address` pinning, like `curl --resolve` (empty = DNS)
+    #[serde(default)]
+    pub resolve: String,
+}
+
+/// Parse `host:port:address`, as `curl --resolve` takes it.
+fn parse_resolve(value: &str) -> Result<Option<(String, std::net::SocketAddr)>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = value.splitn(3, ':');
+    let (Some(host), Some(port), Some(address)) = (parts.next(), parts.next(), parts.next()) else {
+        anyhow::bail!("Invalid --resolve {value:?}, expected host:port:address");
+    };
+    let port: u16 = port
+        .parse()
+        .with_context(|| format!("Invalid port in --resolve {value:?}"))?;
+    let address: std::net::IpAddr = address
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .with_context(|| format!("Invalid address in --resolve {value:?}"))?;
+    Ok(Some((
+        host.to_string(),
+        std::net::SocketAddr::new(address, port),
+    )))
 }
 
 fn default_mfa_mode() -> String {
@@ -163,6 +189,18 @@ impl Config {
             proxy: self.proxy.clone(),
             server_verify_enc_token: self.server_verify_enc_token.clone(),
             server_verify_token: self.server_verify_token.clone(),
+        })
+    }
+
+    /// HTTP transport settings (TLS, mTLS, proxy, name pinning).
+    pub fn http_config(&self) -> Result<passbolt_sdk::NativeHttpConfig> {
+        let non_empty = |value: &str| (!value.is_empty()).then(|| value.to_string());
+        Ok(passbolt_sdk::NativeHttpConfig {
+            tls_skip_verify: self.tls_skip_verify,
+            client_cert_pem: non_empty(&self.tls_client_cert).map(String::into_bytes),
+            client_key_pem: non_empty(&self.tls_client_private_key).map(String::into_bytes),
+            proxy_url: non_empty(&self.proxy),
+            resolve: parse_resolve(&self.resolve)?.into_iter().collect(),
         })
     }
 
