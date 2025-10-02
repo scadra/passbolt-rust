@@ -14,7 +14,7 @@ use assert_cmd::Command;
 use predicates::str::contains;
 
 fn passbolt() -> Command {
-    Command::cargo_bin("passbolt").expect("binary not found")
+    assert_cmd::cargo::cargo_bin_cmd!("passbolt")
 }
 
 #[test]
@@ -59,4 +59,26 @@ fn test_list_resource_fails_without_server() {
 #[test]
 fn test_unknown_subcommand_fails() {
     passbolt().arg("nonexistent-command").assert().failure();
+}
+
+#[test]
+fn test_configure_writes_to_the_config_override_only() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("custom.toml");
+
+    passbolt()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("PASSBOLT_CONFIG", &config)
+        .args(["configure", "--server-address", "https://example.test"])
+        .assert()
+        .success();
+
+    assert!(std::fs::read_to_string(&config)
+        .unwrap()
+        .contains("https://example.test"));
+    assert!(
+        !home.path().join(".config").exists(),
+        "default config location was written"
+    );
 }

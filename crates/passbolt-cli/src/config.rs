@@ -21,6 +21,9 @@ const APP_QUALIFIER: &str = "";
 const APP_ORG: &str = "";
 const APP_NAME: &str = "passbolt";
 
+/// Set by `--config` / `PASSBOLT_CONFIG`.
+static PATH_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 /// Full configuration for passbolt-rs.
 ///
 /// Derives `Zeroize`/`ZeroizeOnDrop` so that all fields — including the private
@@ -112,8 +115,16 @@ fn default_timeout() -> String {
 }
 
 impl Config {
-    /// Return the configuration file path (XDG-compatible).
+    /// Read and write the configuration at `path` instead of the default location.
+    pub fn set_path(path: PathBuf) {
+        let _ = PATH_OVERRIDE.set(path);
+    }
+
+    /// Return the configuration file path: `--config`, else the XDG location.
     pub fn config_path() -> Result<PathBuf> {
+        if let Some(path) = PATH_OVERRIDE.get() {
+            return Ok(path.clone());
+        }
         let dirs = ProjectDirs::from(APP_QUALIFIER, APP_ORG, APP_NAME)
             .context("Cannot determine config directory")?;
         Ok(dirs.config_dir().join("config.toml"))
