@@ -76,6 +76,12 @@ pub trait HttpClient: Send + Sync {
         headers: &[(&str, &str)],
     ) -> Result<HttpResponse, TransportError>;
 
+    /// Current value of cookie `name` for `url`, for backends with a cookie jar.
+    fn cookie(&self, url: &str, name: &str) -> Option<String> {
+        let _ = (url, name);
+        None
+    }
+
     /// Send a DELETE request with a JSON body.
     ///
     /// Some Passbolt endpoints (e.g. bulk delete) require a body on DELETE.

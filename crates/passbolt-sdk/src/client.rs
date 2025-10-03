@@ -17,7 +17,7 @@ use pgp::types::SecretKeyTrait;
 use pgp::SignedSecretKey;
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use serde_json::Value;
 
@@ -34,7 +34,7 @@ use crate::types::*;
 pub struct PassboltSdk<H: HttpClient> {
     http: H,
     pub base_url: String,
-    pub csrf_token: String,
+    csrf_token: RwLock<String>,
     pub(crate) private_key: PrivateKey,
     pub(crate) passphrase: SecretString,
     pub user_id: String,
@@ -49,7 +49,6 @@ pub struct PassboltSdk<H: HttpClient> {
 async fn fetch_metadata_key<H: HttpClient>(
     http: &H,
     base_url: &str,
-    _csrf_token: &str,
     user_id: &str,
     private_key: &pgp::SignedSecretKey,
     passphrase: &str,
@@ -142,7 +141,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         let mut client = Self {
             http,
             base_url,
-            csrf_token: std::mem::take(&mut tokens.csrf_token),
+            csrf_token: RwLock::new(std::mem::take(&mut tokens.csrf_token)),
             private_key,
             passphrase,
             user_id: std::mem::take(&mut tokens.user_id),
@@ -150,19 +149,14 @@ impl<H: HttpClient> PassboltSdk<H> {
         };
 
         // Login is exempt from CSRF: the token cookie comes with this first GET.
-        let (user_id, csrf_token) = client.fetch_current_user().await?;
-        client.user_id = user_id;
-        if let Some(csrf_token) = csrf_token {
-            client.csrf_token = csrf_token;
-        }
+        client.user_id = client.fetch_current_user().await?;
         Ok(client)
     }
 
-    /// Fetch current user ID via GET /users/me.json (post-login verify).
-    /// Current user id and the CSRF cookie set by `/users/me.json`.
-    async fn fetch_current_user(&self) -> Result<(String, Option<String>), PassboltError> {
+    /// Current user id, from `GET /users/me.json` (post-login verify).
+    async fn fetch_current_user(&self) -> Result<String, PassboltError> {
         let url = format!("{}/users/me.json?contain[gpgkey]=1", self.base_url);
-        let response = self.http.get(&url, &[]).await?;
+        let response = self.http_get(&url).await?;
         let current_user: User = self.parse_response(&response).map_err(|error| {
             PassboltError::from(AuthError::LoginFailed(format!(
                 "Failed to fetch current user info: {error}"
@@ -190,14 +184,17 @@ impl<H: HttpClient> PassboltSdk<H> {
             }
         }
 
-        Ok((current_user.id, auth::csrf_cookie(&response)))
+        Ok(current_user.id)
     }
 
     /// Terminate the server-side session.
     pub async fn logout(&self) {
         let url = format!("{}/auth/logout.json", self.base_url);
-        let (csrf_key, csrf_value) = self.csrf_header();
-        let _ = self.http.post(&url, &[(csrf_key, csrf_value)], &[]).await;
+        let csrf_token = self.csrf_token();
+        let _ = self
+            .http
+            .post(&url, &[("X-CSRF-Token", csrf_token.as_str())], &[])
+            .await;
     }
 
     /// Check if the current session is still authenticated.
@@ -206,19 +203,34 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// Callers can use this for keep-alive or session refresh logic.
     pub async fn check_auth_status(&self) -> Result<bool, PassboltError> {
         let url = format!("{}/auth/is-authenticated.json", self.base_url);
-        let response = self.http.get(&url, &[]).await?;
+        let response = self.http_get(&url).await?;
         Ok(response.status < 400)
     }
 
     // ── Internal HTTP helpers ─────────────────────────────────────────────────
 
-    const fn csrf_header(&self) -> (&'static str, &str) {
-        ("X-CSRF-Token", self.csrf_token.as_str())
+    /// Token to send as `X-CSRF-Token`: the `csrfToken` cookie, whichever request set it.
+    pub fn csrf_token(&self) -> String {
+        self.http
+            .cookie(&self.base_url, "csrfToken")
+            .unwrap_or_else(|| self.csrf_token.read().unwrap().clone())
+    }
+
+    fn remember_csrf_cookie(&self, response: &HttpResponse) {
+        if let Some(token) = auth::csrf_cookie(response) {
+            *self.csrf_token.write().unwrap() = token;
+        }
+    }
+
+    async fn http_get(&self, url: &str) -> Result<HttpResponse, PassboltError> {
+        let response = self.http.get(url, &[]).await?;
+        self.remember_csrf_cookie(&response);
+        Ok(response)
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let response = self.http.get(&url, &[]).await?;
+        let response = self.http_get(&url).await?;
         self.parse_response(&response)
     }
 
@@ -256,7 +268,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             url.push_str(&query_pairs.join("&"));
         }
 
-        let response = self.http.get(&url, &[]).await?;
+        let response = self.http_get(&url).await?;
         self.parse_response(&response)
     }
 
@@ -266,12 +278,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_value) = self.csrf_header();
+        let csrf_token = self.csrf_token();
         let json_body = serde_json::to_vec(body)?;
         let response = self
             .http
-            .post(&url, &[(csrf_key, csrf_value)], &json_body)
+            .post(&url, &[("X-CSRF-Token", csrf_token.as_str())], &json_body)
             .await?;
+        self.remember_csrf_cookie(&response);
         self.parse_response(&response)
     }
 
@@ -281,19 +294,24 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_value) = self.csrf_header();
+        let csrf_token = self.csrf_token();
         let json_body = serde_json::to_vec(body)?;
         let response = self
             .http
-            .put(&url, &[(csrf_key, csrf_value)], &json_body)
+            .put(&url, &[("X-CSRF-Token", csrf_token.as_str())], &json_body)
             .await?;
+        self.remember_csrf_cookie(&response);
         self.parse_response(&response)
     }
 
     async fn delete_request(&self, path: &str) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_value) = self.csrf_header();
-        let response = self.http.delete(&url, &[(csrf_key, csrf_value)]).await?;
+        let csrf_token = self.csrf_token();
+        let response = self
+            .http
+            .delete(&url, &[("X-CSRF-Token", csrf_token.as_str())])
+            .await?;
+        self.remember_csrf_cookie(&response);
 
         if response.status >= 400 {
             let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
@@ -317,12 +335,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let (csrf_key, csrf_value) = self.csrf_header();
+        let csrf_token = self.csrf_token();
         let json_body = serde_json::to_vec(body)?;
         let response = self
             .http
-            .delete_with_body(&url, &[(csrf_key, csrf_value)], &json_body)
+            .delete_with_body(&url, &[("X-CSRF-Token", csrf_token.as_str())], &json_body)
             .await?;
+        self.remember_csrf_cookie(&response);
 
         if response.status >= 400 {
             let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
@@ -397,7 +416,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             page_params.push(("page", page.to_string()));
 
             let url = self.build_query_url(path, &page_params);
-            let response = self.http.get(&url, &[]).await?;
+            let response = self.http_get(&url).await?;
             let body: Value = serde_json::from_slice(&response.body)?;
 
             if response.status >= 400 {
@@ -478,7 +497,6 @@ impl<H: HttpClient> PassboltSdk<H> {
         let result = fetch_metadata_key(
             &self.http,
             &self.base_url,
-            &self.csrf_token,
             &self.user_id,
             &self.private_key.key,
             self.passphrase.expose_secret(),
