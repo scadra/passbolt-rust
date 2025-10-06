@@ -33,6 +33,7 @@ pub const CAROL_ID: &str = "8b6c3a10-0000-4000-8000-0000000ca201";
 pub const ERIN_ID: &str = "8b6c3a10-0000-4000-8000-00000000e121";
 pub const GROUP_ID: &str = "9c7d4b20-0000-4000-8000-000000000960";
 pub const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
+pub const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
 
 pub type Client = PassboltSdk<FakePassbolt>;
 

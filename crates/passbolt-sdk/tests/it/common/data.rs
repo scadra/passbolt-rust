@@ -137,6 +137,13 @@ pub fn permission(id: &str, aro: &str, aro_foreign_key: &str, permission_type: i
     permission
 }
 
+/// Folder with `permissions`, as `/folders/{id}.json?contain[permissions]=1` returns it.
+pub fn folder(permissions: Value) -> Value {
+    let mut folder = fixture!("folder.json");
+    folder["permissions"] = permissions;
+    folder
+}
+
 pub fn group() -> Value {
     fixture!("group.json")
 }

@@ -829,7 +829,10 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     pub async fn get_folder_permissions(&self, id: &str) -> Result<Vec<Permission>, PassboltError> {
-        self.get(&format!("/permissions/folder/{id}.json")).await
+        let folder: Folder = self
+            .get(&format!("/folders/{id}.json?contain[permissions]=1"))
+            .await?;
+        Ok(folder.permissions)
     }
 
     // ── Users ─────────────────────────────────────────────────────────────────
