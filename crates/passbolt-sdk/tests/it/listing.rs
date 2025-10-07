@@ -10,9 +10,39 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use passbolt_sdk::resource::list::list_resources;
 use serde_json::json;
 
 use crate::common::*;
+
+#[tokio::test]
+async fn search_filters_resources_by_name_even_if_the_server_ignores_it() {
+    let fake = FakePassbolt::new();
+    let mut github = data::resource_v4("password-string", "p");
+    github["name"] = "GitHub".into();
+    let mut gitlab = data::resource_v4("password-string", "p");
+    gitlab["name"] = "GitLab".into();
+    fake.on("GET", "/resources.json", json!([github, gitlab]));
+    let client = login_ada(&fake).await;
+
+    let resources = list_resources(
+        &client,
+        false,
+        false,
+        vec![],
+        vec![],
+        Some("hub".into()),
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let names: Vec<&str> = resources
+        .iter()
+        .map(|resource| resource.name.as_str())
+        .collect();
+    assert_eq!(names, ["GitHub"]);
+}
 
 #[tokio::test]
 async fn folder_permissions_come_with_the_folder() {

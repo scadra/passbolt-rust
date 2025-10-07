@@ -32,9 +32,14 @@ pub async fn list_resources<H: HttpClient>(
         owned_by_me,
         group_ids,
         folder_ids,
-        search,
+        search: search.clone(),
         ..Default::default()
     };
-    let resources = client.get_resources(query).await?;
+    let mut resources = client.get_resources(query).await?;
+    // The server ignores the search filter (v5 names are encrypted): match the name here.
+    if let Some(search) = search {
+        let needle = search.to_lowercase();
+        resources.retain(|resource| resource.name.to_lowercase().contains(&needle));
+    }
     Ok(filter_resources(resources, filters))
 }
