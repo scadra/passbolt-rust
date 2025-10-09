@@ -480,8 +480,8 @@ pub enum ShareEntity {
     Resource {
         #[arg(long)]
         id: String,
-        /// Permission type: 1=Read, 7=Update, 15=Owner
-        #[arg(short = 't', long, default_value = "1")]
+        /// Permission type: 1=Read, 7=Update, 15=Owner, -1=Revoke
+        #[arg(short = 't', long, default_value = "1", allow_negative_numbers = true)]
         r#type: i32,
         /// User IDs to share with
         #[arg(short = 'u', long)]
@@ -493,7 +493,8 @@ pub enum ShareEntity {
     Folder {
         #[arg(long)]
         id: String,
-        #[arg(short = 't', long, default_value = "1")]
+        /// Permission type: 1=Read, 7=Update, 15=Owner, -1=Revoke
+        #[arg(short = 't', long, default_value = "1", allow_negative_numbers = true)]
         r#type: i32,
         #[arg(short = 'u', long)]
         user: Vec<String>,

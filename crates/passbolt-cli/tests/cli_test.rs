@@ -82,3 +82,20 @@ fn test_configure_writes_to_the_config_override_only() {
         "default config location was written"
     );
 }
+
+#[test]
+fn test_share_accepts_a_negative_type_to_revoke() {
+    let output = passbolt()
+        .env(
+            "PASSBOLT_CONFIG",
+            std::env::temp_dir().join("passbolt-cli-test-none.toml"),
+        )
+        .args([
+            "share", "resource", "--id", "x", "--type", "-1", "--user", "y",
+        ])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("unexpected argument"), "{stderr}");
+}
