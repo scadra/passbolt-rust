@@ -15,6 +15,10 @@
 
 mod common;
 
+mod directory;
 mod folders;
 mod resources;
 mod session;
+mod sharing;
+mod tools;
+mod totp;

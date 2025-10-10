@@ -8,9 +8,10 @@ if [[ -f .env.e2e ]]; then
   source .env.e2e
   set +a
 fi
-# Tests run from the crate directory: make the key path absolute.
-if [[ -n "${PASSBOLT_E2E_USER_PRIVATE_KEY_FILE:-}" ]]; then
-  PASSBOLT_E2E_USER_PRIVATE_KEY_FILE=$(realpath "$PASSBOLT_E2E_USER_PRIVATE_KEY_FILE")
-  export PASSBOLT_E2E_USER_PRIVATE_KEY_FILE
-fi
+# Tests run from the crate directory: make the key paths absolute.
+for key_file in PASSBOLT_E2E_USER_PRIVATE_KEY_FILE PASSBOLT_E2E_ADMIN_USER_PRIVATE_KEY_FILE; do
+  if [[ -n "${!key_file:-}" ]]; then
+    export "$key_file=$(realpath "${!key_file}")"
+  fi
+done
 exec cargo test -p passbolt-cli --features e2e --test e2e "$@" -- --test-threads=1
