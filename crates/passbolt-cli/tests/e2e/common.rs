@@ -20,7 +20,18 @@ const REQUIRED: [&str; 3] = ["SERVER_ADDRESS", "USER_PRIVATE_KEY_FILE", "USER_PA
 const OPTIONAL: [&str; 2] = ["RESOLVE", "TLS_SKIP_VERIFY"];
 
 /// The CLI configured for the e2e server, isolated from any user config file.
+/// Who runs the command: the regular test user or `PASSBOLT_E2E_ADMIN_*`.
+#[derive(Clone, Copy)]
+pub enum Account {
+    User,
+    Admin,
+}
+
 pub fn passbolt() -> Command {
+    passbolt_as(Account::User)
+}
+
+pub fn passbolt_as(account: Account) -> Command {
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("passbolt");
     command.env_clear().env(
         "PASSBOLT_CONFIG",
@@ -36,13 +47,25 @@ pub fn passbolt() -> Command {
             command.env(format!("PASSBOLT_{name}"), value);
         }
     }
+    if matches!(account, Account::Admin) {
+        for name in ["USER_PRIVATE_KEY_FILE", "USER_PASSWORD"] {
+            let value = std::env::var(format!("PASSBOLT_E2E_ADMIN_{name}")).unwrap_or_else(|_| {
+                panic!("PASSBOLT_E2E_ADMIN_{name} is not set, see .env.e2e.example")
+            });
+            command.env(format!("PASSBOLT_{name}"), value);
+        }
+    }
     command.env("PASSBOLT_MFA_MODE", "none");
     command
 }
 
 /// Run `args` with `--json` and parse the output; fails the test on error.
 pub fn run_json(args: &[&str]) -> Value {
-    let output = passbolt()
+    run_json_as(Account::User, args)
+}
+
+pub fn run_json_as(account: Account, args: &[&str]) -> Value {
+    let output = passbolt_as(account)
         .args(args)
         .arg("--json")
         .assert()
@@ -59,7 +82,61 @@ pub fn run_json(args: &[&str]) -> Value {
 }
 
 pub fn run(args: &[&str]) {
-    passbolt().args(args).assert().success();
+    run_as(Account::User, args);
+}
+
+pub fn run_as(account: Account, args: &[&str]) {
+    passbolt_as(account).args(args).assert().success();
+}
+
+/// Table / text output of `args`.
+pub fn run_text(args: &[&str]) -> String {
+    let output = passbolt()
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output).unwrap()
+}
+
+/// Resource named `name` with `password`, plus any `extra_args`.
+pub fn create_resource(name: &str, password: &str, extra_args: &[&str]) -> Cleanup {
+    let mut args = vec!["create", "resource", "--name", name, "--password", password];
+    args.extend_from_slice(extra_args);
+    Cleanup::new("resource", &run_json(&args))
+}
+
+pub fn create_folder(name: &str, extra_args: &[&str]) -> Cleanup {
+    let mut args = vec!["create", "folder", "--name", name];
+    args.extend_from_slice(extra_args);
+    Cleanup::new("folder", &run_json(&args))
+}
+
+/// Id of the `PASSBOLT_E2E_SHARE_WITH` user, the recipient of sharing tests.
+pub fn share_with_user_id() -> String {
+    let username = std::env::var("PASSBOLT_E2E_SHARE_WITH")
+        .expect("PASSBOLT_E2E_SHARE_WITH is not set, see .env.e2e.example");
+    user_id(&username)
+}
+
+pub fn user_id(username: &str) -> String {
+    let users = run_json(&["list", "user", "--filter", &format!("username={username}")]);
+    users[0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no user {username}"))
+        .to_string()
+}
+
+/// Ids in a JSON list output.
+pub fn ids(listed: &Value) -> Vec<&str> {
+    listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect()
 }
 
 /// Name unique to this run, so tests never collide with existing data.
@@ -75,20 +152,26 @@ pub fn unique_name(prefix: &str) -> String {
 pub struct Cleanup {
     pub entity: &'static str,
     pub id: String,
+    account: Account,
 }
 
 impl Cleanup {
     pub fn new(entity: &'static str, created: &Value) -> Self {
+        Self::by(Account::User, entity, created)
+    }
+
+    pub fn by(account: Account, entity: &'static str, created: &Value) -> Self {
         Self {
             entity,
             id: created["id"].as_str().unwrap().to_string(),
+            account,
         }
     }
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        let _ = passbolt()
+        let _ = passbolt_as(self.account)
             .args(["delete", self.entity, "--id", &self.id])
             .output();
     }

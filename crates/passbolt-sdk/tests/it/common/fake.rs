@@ -68,6 +68,7 @@ struct State {
     mfa_verified: bool,
     no_csrf_cookie: bool,
     csrf_cookie_sent: bool,
+    rotated_csrf_token: Option<String>,
 }
 
 /// Clones share their state: keep one to inspect what the SDK sent.
@@ -129,6 +130,11 @@ impl FakePassbolt {
     /// Send `plaintext` as the `GPGAuth` challenge instead of a valid token.
     pub fn send_challenge(&self, plaintext: &str) {
         self.state.lock().unwrap().challenge = Some(plaintext.to_string());
+    }
+
+    /// Set a new `csrfToken` cookie with the next GET, as the server may do mid-session.
+    pub fn rotate_csrf_token(&self, token: &str) {
+        self.state.lock().unwrap().rotated_csrf_token = Some(token.to_string());
     }
 
     pub fn without_csrf_cookie(&self) {
@@ -205,7 +211,11 @@ impl FakePassbolt {
     /// Like `CsrfProtectionMiddleware`: the cookie comes with the first GET, not with login.
     fn set_csrf_cookie(&self, response: &mut HttpResponse) {
         let mut state = self.state.lock().unwrap();
-        if !state.no_csrf_cookie && !state.csrf_cookie_sent {
+        if let Some(token) = state.rotated_csrf_token.take() {
+            response
+                .headers
+                .push(("set-cookie-name".into(), format!("csrfToken={token}")));
+        } else if !state.no_csrf_cookie && !state.csrf_cookie_sent {
             state.csrf_cookie_sent = true;
             // What NativeHttpClient exposes for the `csrfToken` cookie.
             response

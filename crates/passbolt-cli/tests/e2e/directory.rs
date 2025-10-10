@@ -1,0 +1,223 @@
+// Passbolt ~ Open source password manager for teams
+// Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+//
+// Licensed under GNU Affero General Public License version 3 of the or any later version.
+// For full copyright and license information, please see the LICENSE
+// Redistributions of files must retain the above copyright notice.
+//
+// @copyright     Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
+// @license       https://opensource.org/licenses/AGPL-3.0 AGPL License
+// @link          https://www.passbolt.com Passbolt(tm)
+// @since         0.1.0
+
+//! Users and groups, managed by the admin account.
+
+use serde_json::Value;
+
+use crate::common::{
+    ids, passbolt_as, run_as, run_json, run_json_as, share_with_user_id, unique_name, Account,
+    Cleanup,
+};
+
+const ADMIN: Account = Account::Admin;
+
+fn create_user(first_name: &str) -> (String, Cleanup) {
+    let username = format!("{}@passbolt.com", unique_name("user"));
+    let created = run_json_as(
+        ADMIN,
+        &[
+            "create",
+            "user",
+            "--username",
+            &username,
+            "--firstname",
+            first_name,
+            "--lastname",
+            "E2E",
+        ],
+    );
+    (username, Cleanup::by(ADMIN, "user", &created))
+}
+
+fn create_group(name: &str, manager_id: &str) -> Cleanup {
+    let created = run_json_as(
+        ADMIN,
+        &["create", "group", "--name", name, "--manager", manager_id],
+    );
+    Cleanup::by(ADMIN, "group", &created)
+}
+
+/// `(user_id, is_admin)` of each member.
+fn members(group_id: &str) -> Vec<(String, bool)> {
+    let group = run_json_as(ADMIN, &["get", "group", "--id", group_id]);
+    group["groups_users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|membership: &Value| {
+            (
+                membership["user_id"].as_str().unwrap().to_string(),
+                membership["is_admin"] == true,
+            )
+        })
+        .collect()
+}
+
+/// The admin account: only a group manager can add members, so it manages the test groups.
+fn admin_id() -> String {
+    run_json_as(ADMIN, &["get", "user", "--id", "me"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn created_user_reads_back() {
+    let (username, user) = create_user("Edith");
+
+    let fetched = run_json_as(ADMIN, &["get", "user", "--id", &user.id]);
+
+    assert_eq!(fetched["username"], username.as_str());
+    assert_eq!(fetched["profile"]["first_name"], "Edith");
+}
+
+#[test]
+fn created_user_is_found_by_search() {
+    let (username, user) = create_user("Edith");
+
+    assert_eq!(
+        ids(&run_json_as(
+            ADMIN,
+            &["list", "user", "--search", &username]
+        )),
+        [user.id.as_str()]
+    );
+}
+
+#[test]
+fn renamed_user_reads_back() {
+    let (_, user) = create_user("Edith");
+
+    run_as(
+        ADMIN,
+        &["update", "user", "--id", &user.id, "--firstname", "Frances"],
+    );
+
+    assert_eq!(
+        run_json_as(ADMIN, &["get", "user", "--id", &user.id])["profile"]["first_name"],
+        "Frances"
+    );
+}
+
+#[test]
+#[ignore = "USR-1: update user --role sends the role name as role_id"]
+fn promoted_user_becomes_admin() {
+    let (_, user) = create_user("Edith");
+
+    run_as(
+        ADMIN,
+        &["update", "user", "--id", &user.id, "--role", "admin"],
+    );
+
+    assert_eq!(
+        run_json_as(ADMIN, &["get", "user", "--id", &user.id])["role"]["name"],
+        "admin"
+    );
+}
+
+#[test]
+fn deleted_user_is_gone() {
+    let (_, user) = create_user("Edith");
+
+    run_as(ADMIN, &["delete", "user", "--id", &user.id]);
+
+    passbolt_as(ADMIN)
+        .args(["get", "user", "--id", &user.id])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn created_group_has_its_manager() {
+    let manager = admin_id();
+    let group = create_group(&unique_name("group"), &manager);
+
+    assert_eq!(members(&group.id), [(manager, true)]);
+}
+
+#[test]
+fn added_member_is_in_the_group() {
+    let manager = admin_id();
+    let member = share_with_user_id();
+    let group = create_group(&unique_name("group"), &manager);
+
+    run_as(
+        ADMIN,
+        &["update", "group", "--id", &group.id, "--user", &member],
+    );
+
+    assert!(members(&group.id).contains(&(member, false)));
+}
+
+#[test]
+#[ignore = "GRP-2: removing a member sends the user id instead of the membership id"]
+fn removed_member_leaves_the_group() {
+    let manager = admin_id();
+    let member = share_with_user_id();
+    let group = create_group(&unique_name("group"), &manager);
+    run_as(
+        ADMIN,
+        &["update", "group", "--id", &group.id, "--user", &member],
+    );
+
+    run_as(
+        ADMIN,
+        &["update", "group", "--id", &group.id, "--delete", &member],
+    );
+
+    assert_eq!(members(&group.id), [(manager, true)]);
+}
+
+#[test]
+fn renamed_group_reads_back() {
+    let group = create_group(&unique_name("group"), &admin_id());
+    let new_name = unique_name("renamed");
+
+    run_as(
+        ADMIN,
+        &["update", "group", "--id", &group.id, "--name", &new_name],
+    );
+
+    assert_eq!(
+        run_json_as(ADMIN, &["get", "group", "--id", &group.id])["name"],
+        new_name.as_str()
+    );
+}
+
+#[test]
+fn created_group_is_listed() {
+    let name = unique_name("group");
+    let group = create_group(&name, &admin_id());
+
+    assert_eq!(
+        ids(&run_json(&[
+            "list",
+            "group",
+            "--filter",
+            &format!("name={name}")
+        ])),
+        [group.id.as_str()]
+    );
+}
+
+#[test]
+fn deleted_group_is_gone() {
+    let group = create_group(&unique_name("group"), &admin_id());
+
+    run_as(ADMIN, &["delete", "group", "--id", &group.id]);
+
+    passbolt_as(ADMIN)
+        .args(["get", "group", "--id", &group.id])
+        .assert()
+        .failure();
+}

@@ -11,6 +11,7 @@
 // @since         0.1.0
 
 use passbolt_sdk::{AuthError, PassboltError, PassboltSdk, SdkConfig};
+use serde_json::Value;
 
 use crate::common::*;
 
@@ -48,7 +49,7 @@ async fn login_keeps_the_csrf_cookie_and_the_user_id() {
 
     let client = login_ada(&fake).await;
 
-    assert_eq!(client.csrf_token, CSRF_TOKEN);
+    assert_eq!(client.csrf_token(), CSRF_TOKEN);
     assert_eq!(client.user_id, ADA_ID);
 }
 
@@ -132,6 +133,25 @@ async fn logout_sends_the_csrf_token() {
 
     let logout_requests = fake.requests_to("POST", "/auth/logout.json");
     assert_eq!(logout_requests[0].header("X-CSRF-Token"), Some(CSRF_TOKEN));
+}
+
+#[tokio::test]
+async fn writes_send_the_latest_csrf_cookie() {
+    let fake = FakePassbolt::new();
+    fake.on(
+        "GET",
+        &resource_path(),
+        data::resource_v4("password-string", "p"),
+    );
+    fake.on("DELETE", &resource_path(), Value::Null);
+    let client = login_ada(&fake).await;
+    fake.rotate_csrf_token("rotated-token");
+
+    client.get_resource(RESOURCE_ID).await.unwrap();
+    client.delete_resource(RESOURCE_ID).await.unwrap();
+
+    let delete = &fake.requests_to("DELETE", &resource_path())[0];
+    assert_eq!(delete.header("X-CSRF-Token"), Some("rotated-token"));
 }
 
 #[tokio::test]

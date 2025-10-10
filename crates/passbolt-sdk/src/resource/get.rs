@@ -70,8 +70,8 @@ pub async fn get_totp_code<H: HttpClient>(
         .to_bytes()
         .context("Invalid TOTP secret key (bad base32)")?;
 
-    let totp = TOTP::new(algorithm, digits, 1, period, secret_bytes)
-        .context("Failed to build TOTP generator")?;
+    // Unchecked: 80-bit secrets (Google Authenticator's default) are below the RFC's 128-bit advice.
+    let totp = TOTP::new_unchecked(algorithm, digits, 1, period, secret_bytes);
 
     let code = totp
         .generate_current()

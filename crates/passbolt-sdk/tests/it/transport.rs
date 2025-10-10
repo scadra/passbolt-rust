@@ -192,3 +192,24 @@ async fn does_not_follow_redirects_to_another_origin() {
     );
     assert!(response.is_err());
 }
+
+#[tokio::test]
+async fn reads_a_cookie_set_by_any_earlier_response() {
+    let server = MockServer::start().await;
+    Mock::given(path("/auth/verify.json"))
+        .respond_with(
+            ResponseTemplate::new(200).insert_header("Set-Cookie", "csrfToken=t0k3n; Path=/"),
+        )
+        .mount(&server)
+        .await;
+    let http = native_client();
+
+    http.get(&server_url(&server, "/auth/verify.json"), &[])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        http.cookie(&server.uri(), "csrfToken").as_deref(),
+        Some("t0k3n")
+    );
+}

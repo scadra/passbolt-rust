@@ -16,6 +16,7 @@
 mod common;
 
 mod auth;
+mod listing;
 mod metadata;
 mod properties;
 mod resources;

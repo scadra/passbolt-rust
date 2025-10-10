@@ -11,6 +11,9 @@
 // @since         0.1.0
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+use reqwest::cookie::{CookieStore, Jar};
 
 use reqwest::{
     header::{self, HeaderMap, HeaderValue},
@@ -33,14 +36,16 @@ pub struct NativeHttpConfig {
 /// Native HTTP client backed by `reqwest`.
 pub struct NativeHttpClient {
     inner: Client,
+    cookies: Arc<Jar>,
 }
 
 impl NativeHttpClient {
     /// Build a new native HTTP client from the given configuration.
     pub fn new(config: &NativeHttpConfig) -> Result<Self, PassboltError> {
+        let cookies = Arc::new(Jar::default());
         let mut builder = ClientBuilder::new()
             .use_rustls_tls()
-            .cookie_store(true)
+            .cookie_provider(Arc::clone(&cookies))
             .danger_accept_invalid_certs(config.tls_skip_verify);
 
         // mTLS — client certificate
@@ -82,7 +87,7 @@ impl NativeHttpClient {
             TransportError::Http(format!("Failed to build HTTP client: {error}"))
         })?;
 
-        Ok(Self { inner })
+        Ok(Self { inner, cookies })
     }
 }
 
@@ -126,6 +131,17 @@ async fn into_http_response(response: reqwest::Response) -> Result<HttpResponse,
 }
 
 impl HttpClient for NativeHttpClient {
+    fn cookie(&self, url: &str, name: &str) -> Option<String> {
+        let url = reqwest::Url::parse(url).ok()?;
+        let cookies = self.cookies.cookies(&url)?;
+        cookies
+            .to_str()
+            .ok()?
+            .split("; ")
+            .find_map(|cookie| cookie.strip_prefix(name)?.strip_prefix('='))
+            .map(str::to_owned)
+    }
+
     async fn get(
         &self,
         url: &str,

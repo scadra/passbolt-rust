@@ -34,6 +34,9 @@ pub type Client = passbolt_sdk::PassboltSdk<passbolt_sdk::NativeHttpClient>;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(path) = &cli.config {
+        Config::set_path(path.into());
+    }
 
     // Load config and apply CLI overrides
     let mut config = Config::load().unwrap_or_default();
