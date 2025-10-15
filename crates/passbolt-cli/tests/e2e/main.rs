@@ -16,6 +16,7 @@
 mod common;
 
 mod directory;
+mod errors;
 mod folders;
 mod resources;
 mod session;

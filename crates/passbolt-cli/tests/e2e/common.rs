@@ -27,6 +27,8 @@ pub enum Account {
     Admin,
 }
 
+pub const ADMIN: Account = Account::Admin;
+
 pub fn passbolt() -> Command {
     passbolt_as(Account::User)
 }
@@ -91,7 +93,11 @@ pub fn run_as(account: Account, args: &[&str]) {
 
 /// Table / text output of `args`.
 pub fn run_text(args: &[&str]) -> String {
-    let output = passbolt()
+    run_text_as(Account::User, args)
+}
+
+pub fn run_text_as(account: Account, args: &[&str]) -> String {
+    let output = passbolt_as(account)
         .args(args)
         .assert()
         .success()
@@ -175,4 +181,22 @@ impl Drop for Cleanup {
             .args(["delete", self.entity, "--id", &self.id])
             .output();
     }
+}
+
+/// Id of the admin account.
+pub fn admin_id() -> String {
+    run_json_as(ADMIN, &["get", "user", "--id", "me"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Group created by the admin. Only a group manager can add members, so pass the admin
+/// as `manager_id` when the test changes the membership later.
+pub fn create_group(name: &str, manager_id: &str, member_ids: &[&str]) -> Cleanup {
+    let mut args = vec!["create", "group", "--name", name, "--manager", manager_id];
+    for member_id in member_ids {
+        args.extend(["--user", member_id]);
+    }
+    Cleanup::by(ADMIN, "group", &run_json_as(ADMIN, &args))
 }

@@ -174,3 +174,32 @@ fn deleted_resource_is_gone() {
         .assert()
         .failure();
 }
+
+#[test]
+fn renamed_resource_reads_back() {
+    let resource = create_resource(&unique_name("resource"), "p", &[]);
+    let new_name = unique_name("renamed");
+
+    run(&[
+        "update",
+        "resource",
+        "--id",
+        &resource.id,
+        "--name",
+        &new_name,
+    ]);
+
+    assert_eq!(get(&resource.id)["name"], new_name.as_str());
+}
+
+#[test]
+fn table_output_shows_the_decrypted_fields() {
+    let name = unique_name("resource");
+    let resource = create_resource(&name, "table-password", &["--username", "table-user"]);
+
+    let shown = run_text(&["get", "resource", "--id", &resource.id]);
+
+    for expected in [name.as_str(), "table-user", "table-password"] {
+        assert!(shown.contains(expected), "{expected} missing: {shown}");
+    }
+}

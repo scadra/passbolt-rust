@@ -116,3 +116,17 @@ fn deleted_folder_is_gone() {
         .assert()
         .failure();
 }
+
+#[test]
+fn resource_moved_back_to_the_root_has_no_parent() {
+    let folder = create_folder(&unique_name("folder"), &[]);
+    let resource = create_resource(
+        &unique_name("resource"),
+        "p",
+        &["--folder-parent-id", &folder.id],
+    );
+
+    run(&["move", "resource", "--id", &resource.id]);
+
+    assert!(run_json(&["get", "resource", "--id", &resource.id])["folder_parent_id"].is_null());
+}
