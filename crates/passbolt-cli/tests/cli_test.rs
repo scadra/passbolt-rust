@@ -99,3 +99,54 @@ fn test_share_accepts_a_negative_type_to_revoke() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("unexpected argument"), "{stderr}");
 }
+
+#[test]
+fn test_completion_generates_a_script() {
+    passbolt()
+        .args(["completion", "bash"])
+        .assert()
+        .success()
+        .stdout(contains("passbolt"));
+}
+
+#[test]
+fn test_gendoc_writes_markdown() {
+    let directory = tempfile::tempdir().unwrap();
+
+    passbolt()
+        .args(["gendoc", "--output-dir", directory.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let written = std::fs::read_dir(directory.path()).unwrap().count();
+    assert_ne!(written, 0, "no documentation written");
+}
+
+#[test]
+fn test_configure_persists_every_given_setting() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", &config)
+        .args([
+            "configure",
+            "--server-address",
+            "https://example.test",
+            "--proxy",
+            "http://proxy.test:8080",
+            "--mfa-mode",
+            "none",
+        ])
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    for expected in [
+        "https://example.test",
+        "http://proxy.test:8080",
+        "mfa_mode = \"none\"",
+    ] {
+        assert!(saved.contains(expected), "{expected} missing: {saved}");
+    }
+}
