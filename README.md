@@ -697,7 +697,31 @@ cargo fmt
 bash scripts/license-headers.sh   # every .rs file must carry the Passbolt license header
 ```
 
-Tests use `assert_cmd` + `mockito` for HTTP mocking. See `tests/` directory.
+### Tests
+
+`cargo test` runs everything that needs no server:
+
+| Level | Location | Against |
+|---|---|---|
+| Unit | `crates/*/src` (`#[cfg(test)]`) | single functions |
+| SDK integration | `crates/passbolt-sdk/tests/it` | in-memory fake Passbolt API, data in `tests/fixtures` |
+| CLI | `crates/passbolt-cli/tests/cli_test.rs` | the `passbolt` binary, offline |
+
+Known bugs are `#[ignore]`d tests naming their ticket: `cargo test -- --ignored` lists them.
+
+### End-to-end tests
+
+`scripts/e2e.sh` runs the CLI against a real Passbolt server (`crates/passbolt-cli/tests/e2e`).
+
+```bash
+cp .env.e2e.example .env.e2e   # then adapt it; .env.e2e is git-ignored
+scripts/e2e.sh                  # release build, 4 tests in parallel
+E2E_THREADS=1 scripts/e2e.sh created_resource   # one test, sequentially
+```
+
+The server needs a user and an admin account without MFA, a second user to share with,
+and v4 resource creation allowed. Every test creates uniquely named data and deletes it,
+even when it fails.
 
 # Credits
 
