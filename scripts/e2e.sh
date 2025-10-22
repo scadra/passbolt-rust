@@ -14,4 +14,5 @@ for key_file in PASSBOLT_E2E_USER_PRIVATE_KEY_FILE PASSBOLT_E2E_ADMIN_USER_PRIVA
     export "$key_file=$(realpath "${!key_file}")"
   fi
 done
-exec cargo test -p passbolt-cli --features e2e --test e2e "$@" -- --test-threads=1
+# Release: OpenPGP is much faster optimized. Tests create uniquely named data, so they run in parallel.
+exec cargo test --release -p passbolt-cli --features e2e --test e2e "$@" -- --test-threads="${E2E_THREADS:-4}"

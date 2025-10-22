@@ -10,7 +10,7 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use crate::common::{create_resource, passbolt, run, run_json, unique_name};
+use crate::common::{create_resource, passbolt, run, run_json, unique_name, Cleanup};
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
 
@@ -66,4 +66,35 @@ fn removed_totp_no_longer_generates_a_code() {
         run_json(&["get", "resource", "--id", &resource.id])["password"],
         "p"
     );
+}
+
+#[test]
+fn totp_only_resource_generates_a_code() {
+    let created = run_json(&[
+        "create",
+        "resource",
+        "--name",
+        &unique_name("totp-only"),
+        "--totp-key",
+        TOTP_KEY,
+    ]);
+    let resource = Cleanup::new("resource", &created);
+
+    assert_totp_code(&run_json(&["get", "totp", "--id", &resource.id]), 6);
+}
+
+#[test]
+fn changing_the_digits_keeps_the_totp_key() {
+    let resource = create_resource(&unique_name("totp"), "p", &["--totp-key", TOTP_KEY]);
+
+    run(&[
+        "update",
+        "resource",
+        "--id",
+        &resource.id,
+        "--totp-digits",
+        "8",
+    ]);
+
+    assert_totp_code(&run_json(&["get", "totp", "--id", &resource.id]), 8);
 }

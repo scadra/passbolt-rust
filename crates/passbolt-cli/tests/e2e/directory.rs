@@ -15,11 +15,9 @@
 use serde_json::Value;
 
 use crate::common::{
-    ids, passbolt_as, run_as, run_json, run_json_as, share_with_user_id, unique_name, Account,
-    Cleanup,
+    admin_id, create_group, create_resource, ids, passbolt_as, run, run_as, run_json, run_json_as,
+    run_text_as, share_with_user_id, unique_name, Cleanup, ADMIN,
 };
-
-const ADMIN: Account = Account::Admin;
 
 fn create_user(first_name: &str) -> (String, Cleanup) {
     let username = format!("{}@passbolt.com", unique_name("user"));
@@ -39,14 +37,6 @@ fn create_user(first_name: &str) -> (String, Cleanup) {
     (username, Cleanup::by(ADMIN, "user", &created))
 }
 
-fn create_group(name: &str, manager_id: &str) -> Cleanup {
-    let created = run_json_as(
-        ADMIN,
-        &["create", "group", "--name", name, "--manager", manager_id],
-    );
-    Cleanup::by(ADMIN, "group", &created)
-}
-
 /// `(user_id, is_admin)` of each member.
 fn members(group_id: &str) -> Vec<(String, bool)> {
     let group = run_json_as(ADMIN, &["get", "group", "--id", group_id]);
@@ -61,14 +51,6 @@ fn members(group_id: &str) -> Vec<(String, bool)> {
             )
         })
         .collect()
-}
-
-/// The admin account: only a group manager can add members, so it manages the test groups.
-fn admin_id() -> String {
-    run_json_as(ADMIN, &["get", "user", "--id", "me"])["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
 }
 
 #[test]
@@ -140,7 +122,7 @@ fn deleted_user_is_gone() {
 #[test]
 fn created_group_has_its_manager() {
     let manager = admin_id();
-    let group = create_group(&unique_name("group"), &manager);
+    let group = create_group(&unique_name("group"), &manager, &[]);
 
     assert_eq!(members(&group.id), [(manager, true)]);
 }
@@ -149,7 +131,7 @@ fn created_group_has_its_manager() {
 fn added_member_is_in_the_group() {
     let manager = admin_id();
     let member = share_with_user_id();
-    let group = create_group(&unique_name("group"), &manager);
+    let group = create_group(&unique_name("group"), &manager, &[]);
 
     run_as(
         ADMIN,
@@ -164,7 +146,7 @@ fn added_member_is_in_the_group() {
 fn removed_member_leaves_the_group() {
     let manager = admin_id();
     let member = share_with_user_id();
-    let group = create_group(&unique_name("group"), &manager);
+    let group = create_group(&unique_name("group"), &manager, &[]);
     run_as(
         ADMIN,
         &["update", "group", "--id", &group.id, "--user", &member],
@@ -180,7 +162,7 @@ fn removed_member_leaves_the_group() {
 
 #[test]
 fn renamed_group_reads_back() {
-    let group = create_group(&unique_name("group"), &admin_id());
+    let group = create_group(&unique_name("group"), &admin_id(), &[]);
     let new_name = unique_name("renamed");
 
     run_as(
@@ -197,7 +179,7 @@ fn renamed_group_reads_back() {
 #[test]
 fn created_group_is_listed() {
     let name = unique_name("group");
-    let group = create_group(&name, &admin_id());
+    let group = create_group(&name, &admin_id(), &[]);
 
     assert_eq!(
         ids(&run_json(&[
@@ -212,7 +194,7 @@ fn created_group_is_listed() {
 
 #[test]
 fn deleted_group_is_gone() {
-    let group = create_group(&unique_name("group"), &admin_id());
+    let group = create_group(&unique_name("group"), &admin_id(), &[]);
 
     run_as(ADMIN, &["delete", "group", "--id", &group.id]);
 
@@ -220,4 +202,99 @@ fn deleted_group_is_gone() {
         .args(["get", "group", "--id", &group.id])
         .assert()
         .failure();
+}
+
+#[test]
+fn users_with_access_to_a_resource_are_listed() {
+    let recipient = share_with_user_id();
+    let resource = create_resource(&unique_name("resource"), "p", &[]);
+    run(&[
+        "share",
+        "resource",
+        "--id",
+        &resource.id,
+        "--type",
+        "1",
+        "--user",
+        &recipient,
+    ]);
+
+    let users = run_json(&["list", "user", "--resource", &resource.id]);
+
+    assert!(ids(&users).contains(&recipient.as_str()), "{users}");
+}
+
+#[test]
+fn admins_are_listed_without_regular_users() {
+    let admins = run_json(&["list", "user", "--admin"]);
+
+    let admin_ids = ids(&admins);
+    assert!(admin_ids.contains(&admin_id().as_str()));
+    assert!(!admin_ids.contains(&share_with_user_id().as_str()));
+}
+
+#[test]
+fn group_members_are_listed() {
+    let member = share_with_user_id();
+    let group = create_group(&unique_name("group"), &admin_id(), &[&member]);
+
+    let users = run_json(&["list", "user", "--group", &group.id]);
+
+    assert!(ids(&users).contains(&member.as_str()), "{users}");
+}
+
+#[test]
+fn groups_are_listed_by_member_and_by_manager() {
+    let manager = admin_id();
+    let member = share_with_user_id();
+    let group = create_group(&unique_name("group"), &manager, &[&member]);
+
+    for (flag, user) in [("--user", &member), ("--manager", &manager)] {
+        let groups = run_json(&["list", "group", flag, user]);
+        assert!(
+            ids(&groups).contains(&group.id.as_str()),
+            "{flag}: {groups}"
+        );
+    }
+}
+
+#[test]
+fn user_table_shows_the_profile() {
+    let (username, user) = create_user("Edith");
+
+    let shown = run_text_as(ADMIN, &["get", "user", "--id", &user.id]);
+
+    assert!(
+        shown.contains(&username) && shown.contains("Edith"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn group_table_shows_the_manager() {
+    let group = create_group(&unique_name("group"), &admin_id(), &[]);
+
+    let shown = run_text_as(ADMIN, &["get", "group", "--id", &group.id]);
+
+    assert!(
+        shown.contains(&admin_id()) && shown.contains("Manager"),
+        "{shown}"
+    );
+}
+
+#[test]
+#[ignore = "GRP-3: get group ignores --column and shows no member username"]
+fn group_table_shows_the_requested_columns() {
+    let member = share_with_user_id();
+    let group = create_group(&unique_name("group"), &admin_id(), &[&member]);
+
+    let shown = run_text_as(
+        ADMIN,
+        &["get", "group", "--id", &group.id, "-c", "Username"],
+    );
+
+    assert!(
+        shown.contains(&std::env::var("PASSBOLT_E2E_SHARE_WITH").unwrap()),
+        "{shown}"
+    );
 }

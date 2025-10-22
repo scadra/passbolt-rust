@@ -13,7 +13,8 @@
 use serde_json::Value;
 
 use crate::common::{
-    create_folder, create_resource, run, run_json, share_with_user_id, unique_name,
+    admin_id, create_folder, create_group, create_resource, ids, run, run_json, share_with_user_id,
+    unique_name,
 };
 
 /// Permission type granted to `user_id`, if any.
@@ -118,4 +119,59 @@ fn shared_folder_grants_the_permission() {
 
     let permissions = run_json(&["get", "folder-permissions", "--id", &folder.id]);
     assert_eq!(permission_of(&permissions, &recipient), Some(1));
+}
+
+#[test]
+fn folder_shared_with_a_group_grants_the_permission() {
+    let group = create_group(&unique_name("group"), &admin_id(), &[]);
+    let folder = create_folder(&unique_name("shared"), &[]);
+
+    run(&[
+        "share", "folder", "--id", &folder.id, "--type", "1", "--group", &group.id,
+    ]);
+
+    let permissions = run_json(&["get", "folder-permissions", "--id", &folder.id]);
+    assert_eq!(permission_of(&permissions, &group.id), Some(1));
+}
+
+#[test]
+#[ignore = "SHR-1: sharing with a group does not encrypt the secret for its members"]
+fn resource_shared_with_a_group_grants_the_permission() {
+    let group = create_group(&unique_name("group"), &admin_id(), &[]);
+    let resource = create_resource(&unique_name("shared"), "p", &[]);
+
+    run(&[
+        "share",
+        "resource",
+        "--id",
+        &resource.id,
+        "--type",
+        "1",
+        "--group",
+        &group.id,
+    ]);
+
+    let permissions = run_json(&["get", "resource-permissions", "--id", &resource.id]);
+    assert_eq!(permission_of(&permissions, &group.id), Some(1));
+}
+
+#[test]
+#[ignore = "SHR-1: sharing with a group does not encrypt the secret for its members"]
+fn resource_shared_with_a_group_is_listed_by_group() {
+    let group = create_group(&unique_name("group"), &admin_id(), &[]);
+    let resource = create_resource(&unique_name("shared"), "p", &[]);
+    run(&[
+        "share",
+        "resource",
+        "--id",
+        &resource.id,
+        "--type",
+        "1",
+        "--group",
+        &group.id,
+    ]);
+
+    let listed = run_json(&["list", "resource", "--group", &group.id]);
+
+    assert_eq!(ids(&listed), [resource.id.as_str()]);
 }
