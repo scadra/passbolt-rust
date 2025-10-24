@@ -97,6 +97,7 @@ pub async fn login<H: HttpClient>(
         })?
         .trim()
         .to_owned();
+    check_auth_token_format(&token)?;
 
     // Step 3: send decrypted token to complete auth
     let verify_body = serde_json::json!({
@@ -145,6 +146,23 @@ pub async fn login<H: HttpClient>(
     }
 
     extract_auth_tokens(&verify_response)
+}
+
+/// Refuse to send back anything but a `GPGAuth` nonce, as the server checks it
+/// (`GpgAuthenticator::_checkNonce`): the key must not decrypt arbitrary messages for the server.
+fn check_auth_token_format(token: &str) -> Result<(), AuthError> {
+    let is_valid = matches!(
+        token.split('|').collect::<Vec<_>>().as_slice(),
+        ["gpgauthv1.3.0", "36", nonce, "gpgauthv1.3.0"]
+            if nonce.len() == 36 && uuid::Uuid::try_parse(nonce).is_ok()
+    );
+    if is_valid {
+        Ok(())
+    } else {
+        Err(AuthError::LoginFailed(
+            "the server challenge is not a GPGAuth token".into(),
+        ))
+    }
 }
 
 /// Inverse of PHP `quotemeta(urlencode($armored))`, how the server sends the challenge.
@@ -320,6 +338,28 @@ mod tests {
     #[case::newline("line1%0Aline2", "line1\nline2")]
     fn test_decode_auth_token_header(#[case] header: &str, #[case] expected: &str) {
         assert_eq!(decode_auth_token_header(header).unwrap(), expected);
+    }
+
+    #[rstest]
+    #[case::other_version("gpgauthv1.2.0|36|de305d54-75b4-431b-adb2-eb6b9e546014|gpgauthv1.2.0")]
+    #[case::mismatched_versions(
+        "gpgauthv1.3.0|36|de305d54-75b4-431b-adb2-eb6b9e546014|gpgauthv1.2.0"
+    )]
+    #[case::wrong_length("gpgauthv1.3.0|32|de305d54-75b4-431b-adb2-eb6b9e546014|gpgauthv1.3.0")]
+    #[case::not_a_uuid("gpgauthv1.3.0|36|de305d54-75b4-431b-adb2-eb6b9e54601z|gpgauthv1.3.0")]
+    #[case::simple_uuid("gpgauthv1.3.0|36|de305d5475b4431badb2eb6b9e546014|gpgauthv1.3.0")]
+    #[case::extra_field("gpgauthv1.3.0|36|de305d54-75b4-431b-adb2-eb6b9e546014|gpgauthv1.3.0|x")]
+    #[case::plaintext("any plaintext")]
+    fn test_check_auth_token_format_rejects(#[case] token: &str) {
+        assert!(check_auth_token_format(token).is_err());
+    }
+
+    #[test]
+    fn test_check_auth_token_format_accepts_a_nonce() {
+        assert!(check_auth_token_format(
+            "gpgauthv1.3.0|36|de305d54-75b4-431b-adb2-eb6b9e546014|gpgauthv1.3.0"
+        )
+        .is_ok());
     }
 
     #[test]

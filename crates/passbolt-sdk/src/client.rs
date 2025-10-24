@@ -95,6 +95,41 @@ async fn fetch_metadata_key<H: HttpClient>(
     Ok(None)
 }
 
+/// `id` unchanged if it is a hyphenated UUID, the only form safe to put in a URL path.
+fn uuid_segment(id: &str) -> Result<&str, PassboltError> {
+    if id.len() == 36 && uuid::Uuid::try_parse(id).is_ok() {
+        Ok(id)
+    } else {
+        Err(PassboltError::InvalidArgument(format!(
+            "{id:?} is not a UUID"
+        )))
+    }
+}
+
+/// Refuse a server URL that would send the session in clear text.
+fn check_server_url(server_url: &str) -> Result<(), PassboltError> {
+    let url = url::Url::parse(server_url)
+        .map_err(|error| PassboltError::Config(format!("invalid server_address: {error}")))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        // A local server (docker, end-to-end tests) is often plain HTTP;
+        // its traffic never leaves the machine.
+        "http" if is_loopback(&url) => Ok(()),
+        scheme => Err(PassboltError::Config(format!(
+            "server_address must use https, not {scheme}"
+        ))),
+    }
+}
+
+fn is_loopback(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
 impl<H: HttpClient> PassboltSdk<H> {
     /// Create a new SDK client with a pre-built HTTP backend and authenticate.
     pub async fn login(
@@ -108,6 +143,7 @@ impl<H: HttpClient> PassboltSdk<H> {
                 "server_address is not configured".into(),
             ));
         }
+        check_server_url(&sdk_config.server_url)?;
 
         let private_key = crypto::parse_private_key(&sdk_config.private_key_armored)?;
         let passphrase = sdk_config.passphrase.clone();
@@ -150,6 +186,11 @@ impl<H: HttpClient> PassboltSdk<H> {
 
         // Login is exempt from CSRF: the token cookie comes with this first GET.
         client.user_id = client.fetch_current_user().await?;
+        if client.csrf_token().is_empty() {
+            return Err(
+                AuthError::LoginFailed("the server did not provide a CSRF token".into()).into(),
+            );
+        }
         Ok(client)
     }
 
@@ -163,25 +204,26 @@ impl<H: HttpClient> PassboltSdk<H> {
             )))
         })?;
 
-        // Cross-check: encrypt random bytes with server's copy of our public key,
-        // then decrypt with our private key.
-        if let Some(gpg_key) = &current_user.gpg_key {
-            if let Some(armored) = &gpg_key.armored_key {
-                if let Ok(public_key) = crypto::parse_public_key(armored) {
-                    let probe = b"passbolt-key-check";
-                    if let Ok(encrypted_probe) = crypto::encrypt_message(probe, &[&public_key]) {
-                        if let Ok(decrypted_probe) = crypto::decrypt_message(
-                            &encrypted_probe,
-                            &self.private_key.key,
-                            self.passphrase.expose_secret(),
-                        ) {
-                            if decrypted_probe != probe {
-                                return Err(AuthError::KeyCrossCheckFailed.into());
-                            }
-                        }
-                    }
-                }
-            }
+        // Cross-check: encrypt a probe with the server's copy of our public key,
+        // then decrypt it with our private key.
+        let armored_key = current_user
+            .gpg_key
+            .as_ref()
+            .and_then(|gpg_key| gpg_key.armored_key.as_deref())
+            .ok_or(AuthError::KeyCrossCheckFailed)?;
+        let probe = b"passbolt-key-check";
+        let decrypted_probe = crypto::parse_public_key(armored_key)
+            .and_then(|public_key| crypto::encrypt_message(probe, &[&public_key]))
+            .and_then(|encrypted_probe| {
+                crypto::decrypt_message(
+                    &encrypted_probe,
+                    &self.private_key.key,
+                    self.passphrase.expose_secret(),
+                )
+            })
+            .map_err(|_| AuthError::KeyCrossCheckFailed)?;
+        if decrypted_probe != probe {
+            return Err(AuthError::KeyCrossCheckFailed.into());
         }
 
         Ok(current_user.id)
@@ -554,9 +596,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         use tokio::task::JoinSet;
 
         let concurrency = if workers == 0 {
-            std::thread::available_parallelism()
-                .map(std::num::NonZero::get)
-                .unwrap_or(4)
+            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
         } else {
             workers
         }
@@ -677,6 +717,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     pub async fn get_resource(&self, id: &str) -> Result<Resource, PassboltError> {
+        let id = uuid_segment(id)?;
         self.get(&format!(
             "/resources/{id}.json?contain[permission]=1&contain[secret]=1"
         ))
@@ -696,12 +737,14 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         payload: &UpdateResourcePayload,
     ) -> Result<Resource, PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::to_value(payload)?;
         self.put_request(&format!("/resources/{id}.json"), &body)
             .await
     }
 
     pub async fn delete_resource(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/resources/{id}.json")).await
     }
 
@@ -709,6 +752,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         &self,
         id: &str,
     ) -> Result<Vec<Permission>, PassboltError> {
+        let id = uuid_segment(id)?;
         self.get(&format!("/permissions/resource/{id}.json")).await
     }
 
@@ -721,7 +765,10 @@ impl<H: HttpClient> PassboltSdk<H> {
             secret.data.clone().unwrap_or_default()
         } else {
             let secrets: Vec<Secret> = self
-                .get(&format!("/secrets/resource/{}.json", resource.id))
+                .get(&format!(
+                    "/secrets/resource/{}.json",
+                    uuid_segment(&resource.id)?
+                ))
                 .await?;
             secrets
                 .first()
@@ -762,7 +809,10 @@ impl<H: HttpClient> PassboltSdk<H> {
 
         for user_id in user_ids {
             let user: User = self
-                .get(&format!("/users/{user_id}.json?contain[gpgkey]=1"))
+                .get(&format!(
+                    "/users/{}.json?contain[gpgkey]=1",
+                    uuid_segment(user_id)?
+                ))
                 .await?;
             let armored_key = user
                 .gpg_key
@@ -802,6 +852,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     pub async fn get_folder(&self, id: &str) -> Result<Folder, PassboltError> {
+        let id = uuid_segment(id)?;
         self.get(&format!("/folders/{id}.json?contain[permissions]=1"))
             .await
     }
@@ -819,16 +870,19 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         payload: &UpdateFolderPayload,
     ) -> Result<Folder, PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::to_value(payload)?;
         self.put_request(&format!("/folders/{id}.json"), &body)
             .await
     }
 
     pub async fn delete_folder(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/folders/{id}.json")).await
     }
 
     pub async fn get_folder_permissions(&self, id: &str) -> Result<Vec<Permission>, PassboltError> {
+        let id = uuid_segment(id)?;
         let folder: Folder = self
             .get(&format!("/folders/{id}.json?contain[permissions]=1"))
             .await?;
@@ -862,6 +916,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     pub async fn get_user(&self, id: &str) -> Result<User, PassboltError> {
+        let id = if id == "me" { id } else { uuid_segment(id)? };
         self.get(&format!(
             "/users/{id}.json?contain[role]=1&contain[gpgkey]=1"
         ))
@@ -878,11 +933,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         payload: &UpdateUserPayload,
     ) -> Result<User, PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::to_value(payload)?;
         self.put_request(&format!("/users/{id}.json"), &body).await
     }
 
     pub async fn delete_user(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/users/{id}.json")).await
     }
 
@@ -908,6 +965,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     pub async fn get_group(&self, id: &str) -> Result<Group, PassboltError> {
+        let id = uuid_segment(id)?;
         self.get(&format!("/groups/{id}.json?contain[groups_users]=1"))
             .await
     }
@@ -922,23 +980,27 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         payload: &UpdateGroupPayload,
     ) -> Result<Group, PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::to_value(payload)?;
         self.put_request(&format!("/groups/{id}.json"), &body).await
     }
 
     pub async fn delete_group(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/groups/{id}.json")).await
     }
 
     // ── Favorites ─────────────────────────────────────────────────────────────
 
     pub async fn add_favorite(&self, resource_id: &str) -> Result<Favorite, PassboltError> {
+        let resource_id = uuid_segment(resource_id)?;
         let body = serde_json::json!({});
         self.post(&format!("/favorites/resource/{resource_id}.json"), &body)
             .await
     }
 
     pub async fn remove_favorite(&self, favorite_id: &str) -> Result<(), PassboltError> {
+        let favorite_id = uuid_segment(favorite_id)?;
         self.delete_request(&format!("/favorites/{favorite_id}.json"))
             .await
     }
@@ -950,6 +1012,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         payload: &SharePayload,
     ) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::to_value(payload)?;
         let _: Value = self
             .put_request(&format!("/share/resource/{id}.json"), &body)
@@ -962,6 +1025,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         payload: &SharePayload,
     ) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::to_value(payload)?;
         let _: Value = self
             .put_request(&format!("/share/folder/{id}.json"), &body)
@@ -1001,6 +1065,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         folder_parent_id: Option<&str>,
     ) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         let payload = MovePayload {
             folder_parent_id: folder_parent_id.map(String::from),
         };
@@ -1016,6 +1081,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         id: &str,
         folder_parent_id: Option<&str>,
     ) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         let payload = MovePayload {
             folder_parent_id: folder_parent_id.map(String::from),
         };
@@ -1075,6 +1141,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         resource_id: &str,
         slug: &str,
     ) -> Result<Tag, PassboltError> {
+        let resource_id = uuid_segment(resource_id)?;
         let body = serde_json::json!({ "slug": slug });
         self.post(&format!("/tags/{resource_id}.json"), &body).await
     }
@@ -1085,6 +1152,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         resource_id: &str,
         tags: &[String],
     ) -> Result<Vec<Tag>, PassboltError> {
+        let resource_id = uuid_segment(resource_id)?;
         let body: Value = tags
             .iter()
             .map(|slug| serde_json::json!({ "slug": slug }))
@@ -1096,12 +1164,14 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     /// Update a tag's slug.
     pub async fn update_tag(&self, id: &str, slug: &str) -> Result<Tag, PassboltError> {
+        let id = uuid_segment(id)?;
         let body = serde_json::json!({ "slug": slug });
         self.put_request(&format!("/tags/{id}.json"), &body).await
     }
 
     /// Delete a tag.
     pub async fn delete_tag(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/tags/{id}.json")).await
     }
 
@@ -1109,6 +1179,7 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     /// List comments for a resource.
     pub async fn get_comments(&self, resource_id: &str) -> Result<Vec<Comment>, PassboltError> {
+        let resource_id = uuid_segment(resource_id)?;
         self.get(&format!(
             "/comments/resource/{resource_id}.json?contain[creator]=1"
         ))
@@ -1122,6 +1193,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         content: &str,
         parent_id: Option<&str>,
     ) -> Result<Comment, PassboltError> {
+        let resource_id = uuid_segment(resource_id)?;
         let mut body = serde_json::json!({ "content": content });
         if let Some(parent_id) = parent_id {
             body["parent_id"] = serde_json::json!(parent_id);
@@ -1132,6 +1204,7 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     /// Delete a comment.
     pub async fn delete_comment(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/comments/{id}.json")).await
     }
 
@@ -1155,6 +1228,7 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     /// Delete password expiry settings.
     pub async fn delete_password_expiry_settings(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
         self.delete_request(&format!("/password-expiry/settings/{id}.json"))
             .await
     }
@@ -1175,6 +1249,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// Returns counts of resources/folders where the user is sole owner,
     /// and groups where they are sole manager.
     pub async fn delete_user_dry_run(&self, id: &str) -> Result<UserDeleteDryRun, PassboltError> {
+        let id = uuid_segment(id)?;
         self.get(&format!("/users/{id}/dry-run.json")).await
     }
 
@@ -1182,6 +1257,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     ///
     /// Returns counts of resources/folders where the group is sole accessor.
     pub async fn delete_group_dry_run(&self, id: &str) -> Result<GroupDeleteDryRun, PassboltError> {
+        let id = uuid_segment(id)?;
         self.get(&format!("/groups/{id}/dry-run.json")).await
     }
 
