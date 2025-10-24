@@ -17,6 +17,7 @@ use reqwest::cookie::{CookieStore, Jar};
 
 use reqwest::{
     header::{self, HeaderMap, HeaderValue},
+    redirect::Policy,
     Client, ClientBuilder,
 };
 
@@ -46,6 +47,7 @@ impl NativeHttpClient {
         let mut builder = ClientBuilder::new()
             .use_rustls_tls()
             .cookie_provider(Arc::clone(&cookies))
+            .redirect(same_origin_redirects())
             .danger_accept_invalid_certs(config.tls_skip_verify);
 
         // mTLS — client certificate
@@ -89,6 +91,26 @@ impl NativeHttpClient {
 
         Ok(Self { inner, cookies })
     }
+}
+
+/// Follow redirects within the origin of the request only: reqwest would
+/// otherwise send the `X-CSRF-Token` header and the body to any other server.
+fn same_origin_redirects() -> Policy {
+    const MAX_REDIRECTS: usize = 10;
+    Policy::custom(|attempt| {
+        let is_same_origin = attempt
+            .previous()
+            .first()
+            .is_some_and(|original| original.origin() == attempt.url().origin());
+        if !is_same_origin {
+            let message = format!("refused redirect to another origin: {}", attempt.url());
+            attempt.error(message)
+        } else if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
 }
 
 /// Convert a `reqwest::Response` into our `HttpResponse`.
