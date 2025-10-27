@@ -33,12 +33,16 @@ pub struct AutoTotpProvider {
 
 impl MfaProvider for AutoTotpProvider {
     fn get_totp_code(&self) -> Result<String, PassboltError> {
-        generate_totp(&self.secret, self.offset_secs)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| PassboltError::Other(format!("System clock error: {error}")))?
+            .as_secs();
+        generate_totp(&self.secret, self.offset_secs, now)
     }
 }
 
-/// Generate a TOTP code from a base32 secret + optional clock offset.
-fn generate_totp(secret: &str, offset_secs: i64) -> Result<String, PassboltError> {
+/// Generate the TOTP code of a base32 secret at `now` (epoch seconds) shifted by `offset_secs`.
+fn generate_totp(secret: &str, offset_secs: i64, now: u64) -> Result<String, PassboltError> {
     use totp_rs::{Algorithm, Secret, TOTP};
 
     let secret_bytes = Secret::Encoded(secret.to_string())
@@ -50,15 +54,48 @@ fn generate_totp(secret: &str, offset_secs: i64) -> Result<String, PassboltError
     let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
         .map_err(|error| PassboltError::Other(format!("Failed to create TOTP: {error}")))?;
 
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| PassboltError::Other(format!("System clock error: {error}")))?
-        .as_secs();
-
-    // Safe: now_secs (epoch seconds) fits in i64 until year 292 billion
-    #[allow(clippy::cast_possible_wrap)]
-    let now_signed = now_secs as i64;
-    #[allow(clippy::cast_sign_loss)]
-    let adjusted = now_signed.saturating_add(offset_secs).max(0) as u64;
+    let adjusted = now.saturating_add_signed(offset_secs);
     Ok(totp.generate(adjusted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 6238 SHA-1 seed "12345678901234567890", base32-encoded.
+    const RFC_6238_SECRET: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+    #[rstest::rstest]
+    #[case(59, "287082")]
+    #[case(1_111_111_109, "081804")]
+    #[case(1_111_111_111, "050471")]
+    #[case(1_234_567_890, "005924")]
+    #[case(2_000_000_000, "279037")]
+    #[case(20_000_000_000, "353130")]
+    fn test_generate_totp_matches_the_rfc_6238_vectors(#[case] now: u64, #[case] expected: &str) {
+        assert_eq!(generate_totp(RFC_6238_SECRET, 0, now).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_generate_totp_applies_a_positive_offset() {
+        assert_eq!(
+            generate_totp(RFC_6238_SECRET, 1_111_111_109 - 59, 59).unwrap(),
+            "081804"
+        );
+    }
+
+    #[test]
+    fn test_generate_totp_applies_a_negative_offset() {
+        assert_eq!(
+            generate_totp(RFC_6238_SECRET, -(1_111_111_109 - 59), 1_111_111_109).unwrap(),
+            "287082"
+        );
+    }
+
+    #[test]
+    fn test_generate_totp_rejects_a_secret_that_is_not_base32() {
+        let error = generate_totp("not base32!", 0, 59).unwrap_err();
+
+        assert!(error.to_string().contains("base32"), "{error}");
+    }
 }

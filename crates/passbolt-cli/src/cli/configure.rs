@@ -87,7 +87,7 @@ pub struct ConfigureArgs {
 }
 
 pub fn run(args: &ConfigureArgs) -> Result<()> {
-    let mut config = Config::load().unwrap_or_default();
+    let mut config = Config::load()?;
 
     if let Some(value) = &args.server_address {
         config.server_address.clone_from(value);

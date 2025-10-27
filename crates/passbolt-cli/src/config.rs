@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const APP_QUALIFIER: &str = "";
@@ -32,6 +32,7 @@ static PATH_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// leaking through `{:?}` formatting.
 #[derive(Clone, Serialize, Deserialize, Default, Zeroize, ZeroizeOnDrop)]
 pub struct Config {
+    #[serde(default)]
     pub server_address: String,
     #[serde(default)]
     pub user_private_key: String,
@@ -149,54 +150,61 @@ impl Config {
         Ok(dirs.config_dir().join("config.toml"))
     }
 
-    /// Load config from file (if it exists) then override with env vars.
+    /// Load the config file (if it exists), then the `PASSBOLT_*` variables over it.
     pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
-
-        let mut settings = config::Config::builder();
-
-        if path.exists() {
-            settings =
-                settings.add_source(config::File::from(path).format(config::FileFormat::Toml));
-        }
-
-        // Env-var overrides: PASSBOLT_SERVER_ADDRESS, etc.
-        settings = settings.add_source(config::Environment::with_prefix("PASSBOLT").separator("_"));
-
-        let config: Self = settings
-            .build()
-            .context("Failed to build config")?
-            .try_deserialize()
-            .context("Failed to deserialize config")?;
-
-        Ok(config)
+        Self::load_from(&Self::config_path()?)
     }
 
-    /// Save the current config to disk with restrictive permissions (0o600 on Unix).
+    /// Load the config at `path` (if it exists), then the `PASSBOLT_*` variables over it.
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let mut settings = config::Config::builder();
+        if path.exists() {
+            settings = settings.add_source(
+                config::File::from(path.to_path_buf()).format(config::FileFormat::Toml),
+            );
+        }
+        // No separator: `PASSBOLT_SERVER_ADDRESS` is `server_address`, not `server.address`.
+        settings = settings.add_source(config::Environment::with_prefix("PASSBOLT"));
+
+        settings
+            .build()
+            .and_then(config::Config::try_deserialize)
+            .with_context(|| format!("Cannot read config file {}", path.display()))
+    }
+
+    /// Save the config to its file, readable by its owner only on Unix.
     pub fn save(&self) -> Result<()> {
-        let path = Self::config_path()?;
+        self.save_to(&Self::config_path()?)
+    }
+
+    /// Save the config to `path`, readable by its owner only on Unix.
+    pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("Cannot create config directory")?;
         }
-        let toml_str = toml::to_string_pretty(self).context("Cannot serialize config")?;
+        let toml_text = toml::to_string_pretty(self).context("Cannot serialize config")?;
+        let write_context = || format!("Cannot write config file {}", path.display());
 
         #[cfg(unix)]
         {
             use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
-                .open(&path)
-                .context("Cannot write config file")?;
-            file.write_all(toml_str.as_bytes())
-                .context("Cannot write config file")?;
+                .open(path)
+                .with_context(write_context)?;
+            // `mode` only applies when the file is created.
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(write_context)?;
+            file.write_all(toml_text.as_bytes())
+                .with_context(write_context)?;
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, toml_str).context("Cannot write config file")?;
+            std::fs::write(path, toml_text).with_context(write_context)?;
         }
 
         Ok(())
@@ -347,26 +355,113 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_file_written_with_mode_600() {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+    fn test_save_restricts_an_existing_file_to_its_owner() {
         use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
+        Config::default().save_to(&path).unwrap();
 
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .unwrap();
-        file.write_all(b"test = true\n").unwrap();
-        drop(file);
-
-        let metadata = std::fs::metadata(&path).unwrap();
-        let mode = metadata.permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_creates_a_file_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("nested/config.toml");
+
+        Config::default().save_to(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn test_save_then_load_keeps_the_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::default();
+        config.server_address = "https://pass.example.com".into();
+        config.mfa_retrys = 5;
+
+        config.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+
+        assert_eq!(loaded.server_address, "https://pass.example.com");
+        assert_eq!(loaded.mfa_retrys, 5);
+    }
+
+    #[test]
+    fn test_load_without_a_file_gives_the_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let config = Config::load_from(&directory.path().join("absent.toml")).unwrap();
+
+        assert_eq!(config.mfa_mode, "interactive-totp");
+        assert_eq!(config.mfa_retrys, 3);
+        assert_eq!(config.mfa_delay, "10s");
+        assert_eq!(config.timeout, "1m");
+    }
+
+    #[test]
+    fn test_load_fills_missing_settings_with_the_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "mfa_mode = \"none\"\n").unwrap();
+
+        let config = Config::load_from(&path).unwrap();
+
+        assert_eq!(config.mfa_mode, "none");
+        assert_eq!(config.mfa_retrys, 3);
+    }
+
+    #[test]
+    fn test_load_reports_the_path_of_an_invalid_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "server_address = [not toml").unwrap();
+
+        let error = Config::load_from(&path).err().unwrap();
+
+        assert!(
+            error.to_string().contains(&path.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("host:443:1.2.3.4", "host", "1.2.3.4:443")]
+    #[case("host:443:[::1]", "host", "[::1]:443")]
+    #[case("host:443:::1", "host", "[::1]:443")]
+    fn test_parse_resolve_accepts(
+        #[case] value: &str,
+        #[case] expected_host: &str,
+        #[case] expected_address: &str,
+    ) {
+        let (host, address) = parse_resolve(value).unwrap().unwrap();
+
+        assert_eq!(host, expected_host);
+        assert_eq!(address, expected_address.parse().unwrap());
+    }
+
+    #[rstest::rstest]
+    #[case::missing_port("host")]
+    #[case::missing_address("host:443")]
+    #[case::port_out_of_range("host:65536:1.2.3.4")]
+    #[case::address_not_an_ip("host:443:example.com")]
+    fn test_parse_resolve_rejects(#[case] value: &str) {
+        let error = parse_resolve(value).err().unwrap();
+
+        assert!(error.to_string().contains("--resolve"), "{error}");
+    }
+
+    #[test]
+    fn test_parse_resolve_empty_is_none() {
+        assert!(parse_resolve("").unwrap().is_none());
     }
 }
