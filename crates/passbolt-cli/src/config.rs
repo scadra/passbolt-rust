@@ -75,6 +75,25 @@ pub struct Config {
     pub resolve: String,
 }
 
+/// Parse a duration such as `30s`, `1m` or `2h`.
+fn parse_duration(value: &str) -> Result<std::time::Duration> {
+    let (amount, unit) = value.split_at(
+        value
+            .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+            .len(),
+    );
+    let amount: u64 = amount
+        .parse()
+        .with_context(|| format!("Invalid duration {value:?}, expected e.g. 30s, 1m, 2h"))?;
+    let seconds = match unit {
+        "s" => amount,
+        "m" => amount * 60,
+        "h" => amount * 3600,
+        _ => anyhow::bail!("Invalid duration {value:?}, expected e.g. 30s, 1m, 2h"),
+    };
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
 /// Parse `host:port:address`, as `curl --resolve` takes it.
 fn parse_resolve(value: &str) -> Result<Option<(String, std::net::SocketAddr)>> {
     if value.is_empty() {
@@ -212,6 +231,7 @@ impl Config {
             client_key_pem: non_empty(&self.tls_client_private_key).map(String::into_bytes),
             proxy_url: non_empty(&self.proxy),
             resolve: parse_resolve(&self.resolve)?.into_iter().collect(),
+            timeout: Some(parse_duration(&self.timeout)?),
         })
     }
 
@@ -231,6 +251,27 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("30s", 30)]
+    #[case("1m", 60)]
+    #[case("2h", 7200)]
+    fn test_parse_duration(#[case] value: &str, #[case] seconds: u64) {
+        assert_eq!(
+            parse_duration(value).unwrap(),
+            std::time::Duration::from_secs(seconds)
+        );
+    }
+
+    #[rstest]
+    #[case("")]
+    #[case("30")]
+    #[case("1d")]
+    #[case("abc")]
+    fn test_parse_duration_rejects(#[case] value: &str) {
+        assert!(parse_duration(value).is_err());
+    }
 
     #[test]
     fn test_default_no_panic() {

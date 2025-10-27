@@ -106,6 +106,7 @@ impl PassboltClient {
                 client_key_pem: None,
                 proxy_url: proxy.clone(),
                 resolve: Vec::new(),
+                timeout: None,
             };
             let http =
                 NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
