@@ -39,11 +39,21 @@ pub struct FfiResource {
     pub secrets: Vec<FfiSecret>,
     pub permissions: Vec<FfiPermission>,
     pub expired: Option<String>,
+    /// v5 only: PGP-armored encrypted metadata.
+    #[uniffi(default = None)]
+    pub metadata: Option<String>,
+    #[uniffi(default = None)]
+    pub metadata_key_id: Option<String>,
+    #[uniffi(default = None)]
+    pub metadata_key_type: Option<String>,
 }
 
 impl From<types::Resource> for FfiResource {
     fn from(r: types::Resource) -> Self {
         Self {
+            metadata: r.armored_metadata().map(String::from),
+            metadata_key_id: r.metadata_key_id,
+            metadata_key_type: r.metadata_key_type,
             id: r.id,
             name: r.name,
             username: r.username,
@@ -526,16 +536,506 @@ impl From<FfiUserQuery> for passbolt_sdk::UserQuery {
 // ── Folder tree ─────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]
+#[allow(clippy::use_self)] // uniffi::Record needs the concrete type name
 pub struct FfiFolderTreeNode {
     pub folder: FfiFolder,
     pub children: Vec<FfiFolderTreeNode>,
 }
 
 impl From<types::FolderTreeNode> for FfiFolderTreeNode {
-    fn from(n: types::FolderTreeNode) -> Self {
+    fn from(node: types::FolderTreeNode) -> Self {
         Self {
-            folder: FfiFolder::from(n.folder),
-            children: n.children.into_iter().map(Self::from).collect(),
+            folder: FfiFolder::from(node.folder),
+            children: node.children.into_iter().map(Self::from).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use rstest::rstest;
+    use serde::de::DeserializeOwned;
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    const CREATED: &str = "2024-01-02T03:04:05+00:00";
+    const MODIFIED: &str = "2024-06-07T08:09:10+00:00";
+
+    fn parse<T: DeserializeOwned>(value: Value) -> T {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn user_json(id: &str) -> Value {
+        json!({
+            "id": id,
+            "username": "ada@passbolt.test",
+            "role_id": "role-1",
+            "created": CREATED,
+            "modified": MODIFIED,
+            "active": true,
+            "deleted": false,
+            "profile": { "first_name": "Ada", "last_name": "Lovelace", "avatar": { "url": "a.png" } },
+            "role": { "id": "role-1", "name": "user" },
+            "gpgkey": {
+                "id": "key-1",
+                "user_id": id,
+                "armored_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+                "bits": 2048,
+                "fingerprint": "ABCDEF",
+                "key_created": CREATED
+            },
+            "groups_users": [{ "id": "gu-1", "group_id": "group-1", "user_id": id }]
+        })
+    }
+
+    fn group_json() -> Value {
+        json!({
+            "id": "group-1",
+            "name": "Developers",
+            "created": CREATED,
+            "modified": MODIFIED,
+            "created_by": "user-1",
+            "modified_by": "user-2",
+            "deleted": false,
+            "groups_users": [{
+                "id": "gu-1",
+                "group_id": "group-1",
+                "user_id": "user-1",
+                "is_admin": true,
+                "created": CREATED,
+                "user": user_json("user-1")
+            }]
+        })
+    }
+
+    fn permission_json() -> Value {
+        json!({
+            "id": "permission-1",
+            "aco": "Resource",
+            "aco_foreign_key": "resource-1",
+            "aro": "User",
+            "aro_foreign_key": "user-1",
+            "type": 15,
+            "created": CREATED,
+            "modified": MODIFIED,
+            "user": user_json("user-1"),
+            "group": group_json()
+        })
+    }
+
+    fn folder_json(id: &str, parent_id: Option<&str>) -> Value {
+        json!({
+            "id": id,
+            "name": format!("folder {id}"),
+            "folder_parent_id": parent_id,
+            "created": CREATED,
+            "modified": MODIFIED,
+            "created_by": "user-1",
+            "modified_by": "user-2",
+            "personal": false,
+            "permissions": [permission_json()]
+        })
+    }
+
+    #[rstest]
+    #[case::utc(Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap(), CREATED)]
+    #[case::subsecond(
+        Utc.timestamp_opt(1_704_164_645, 123_000_000).unwrap(),
+        "2024-01-02T03:04:05.123+00:00"
+    )]
+    fn test_to_iso_formats_rfc3339(#[case] date_time: DateTime<Utc>, #[case] expected: &str) {
+        assert_eq!(to_iso(Some(date_time)).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn test_to_iso_of_none_is_none() {
+        assert_eq!(to_iso(None), None);
+    }
+
+    #[test]
+    fn test_resource_v4_keeps_every_field() {
+        let resource: types::Resource = parse(json!({
+            "id": "resource-1",
+            "name": "Gmail",
+            "username": "ada",
+            "uri": "https://mail.test",
+            "description": "mail",
+            "folder_parent_id": "folder-1",
+            "resource_type_id": "type-1",
+            "created": CREATED,
+            "modified": MODIFIED,
+            "created_by": "user-1",
+            "modified_by": "user-2",
+            "personal": true,
+            "favorite": { "id": "favorite-1", "foreign_model": "Resource", "foreign_key": "resource-1", "created": CREATED },
+            "secrets": [{ "id": "secret-1", "resource_id": "resource-1", "user_id": "user-1", "data": "PGP", "created": CREATED, "modified": MODIFIED }],
+            "permissions": [permission_json()],
+            "expired": MODIFIED
+        }));
+
+        let ffi_resource = FfiResource::from(resource);
+
+        assert_eq!(ffi_resource.id, "resource-1");
+        assert_eq!(ffi_resource.name, "Gmail");
+        assert_eq!(ffi_resource.username.as_deref(), Some("ada"));
+        assert_eq!(ffi_resource.uri.as_deref(), Some("https://mail.test"));
+        assert_eq!(ffi_resource.description.as_deref(), Some("mail"));
+        assert_eq!(ffi_resource.folder_parent_id.as_deref(), Some("folder-1"));
+        assert_eq!(ffi_resource.resource_type_id.as_deref(), Some("type-1"));
+        assert_eq!(ffi_resource.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_resource.modified.as_deref(), Some(MODIFIED));
+        assert_eq!(ffi_resource.created_by.as_deref(), Some("user-1"));
+        assert_eq!(ffi_resource.modified_by.as_deref(), Some("user-2"));
+        assert_eq!(ffi_resource.personal, Some(true));
+        assert_eq!(ffi_resource.expired.as_deref(), Some(MODIFIED));
+        let favorite = ffi_resource.favorite.unwrap();
+        assert_eq!(favorite.id.as_deref(), Some("favorite-1"));
+        assert_eq!(favorite.foreign_model.as_deref(), Some("Resource"));
+        assert_eq!(favorite.foreign_key.as_deref(), Some("resource-1"));
+        assert_eq!(favorite.created.as_deref(), Some(CREATED));
+        let secret = &ffi_resource.secrets[0];
+        assert_eq!(secret.id.as_deref(), Some("secret-1"));
+        assert_eq!(secret.resource_id.as_deref(), Some("resource-1"));
+        assert_eq!(secret.user_id.as_deref(), Some("user-1"));
+        assert_eq!(secret.data.as_deref(), Some("PGP"));
+        assert_eq!(secret.created.as_deref(), Some(CREATED));
+        assert_eq!(secret.modified.as_deref(), Some(MODIFIED));
+        assert_eq!(ffi_resource.permissions.len(), 1);
+        assert_eq!(ffi_resource.metadata, None);
+        assert_eq!(ffi_resource.metadata_key_id, None);
+        assert_eq!(ffi_resource.metadata_key_type, None);
+    }
+
+    #[test]
+    fn test_resource_v5_keeps_metadata_fields() {
+        let resource: types::Resource = parse(json!({
+            "id": "resource-1",
+            "created": CREATED,
+            "modified": MODIFIED,
+            "metadata": "-----BEGIN PGP MESSAGE-----",
+            "metadata_key_id": "metadata-key-1",
+            "metadata_key_type": "shared_key"
+        }));
+
+        let ffi_resource = FfiResource::from(resource);
+
+        assert_eq!(ffi_resource.name, "");
+        assert_eq!(
+            ffi_resource.metadata.as_deref(),
+            Some("-----BEGIN PGP MESSAGE-----")
+        );
+        assert_eq!(
+            ffi_resource.metadata_key_id.as_deref(),
+            Some("metadata-key-1")
+        );
+        assert_eq!(
+            ffi_resource.metadata_key_type.as_deref(),
+            Some("shared_key")
+        );
+    }
+
+    #[test]
+    fn test_folder_keeps_every_field() {
+        let folder: types::Folder = parse(folder_json("folder-2", Some("folder-1")));
+
+        let ffi_folder = FfiFolder::from(folder);
+
+        assert_eq!(ffi_folder.id, "folder-2");
+        assert_eq!(ffi_folder.name, "folder folder-2");
+        assert_eq!(ffi_folder.folder_parent_id.as_deref(), Some("folder-1"));
+        assert_eq!(ffi_folder.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_folder.modified.as_deref(), Some(MODIFIED));
+        assert_eq!(ffi_folder.created_by.as_deref(), Some("user-1"));
+        assert_eq!(ffi_folder.modified_by.as_deref(), Some("user-2"));
+        assert_eq!(ffi_folder.personal, Some(false));
+        assert_eq!(ffi_folder.permissions.len(), 1);
+    }
+
+    #[test]
+    fn test_user_keeps_every_field_but_groups_users() {
+        let user: types::User = parse(user_json("user-1"));
+
+        let ffi_user = FfiUser::from(user);
+
+        assert_eq!(ffi_user.id, "user-1");
+        assert_eq!(ffi_user.username.as_deref(), Some("ada@passbolt.test"));
+        assert_eq!(ffi_user.role_id.as_deref(), Some("role-1"));
+        assert_eq!(ffi_user.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_user.modified.as_deref(), Some(MODIFIED));
+        assert_eq!(ffi_user.active, Some(true));
+        assert_eq!(ffi_user.deleted, Some(false));
+        let profile = ffi_user.profile.unwrap();
+        assert_eq!(profile.first_name.as_deref(), Some("Ada"));
+        assert_eq!(profile.last_name.as_deref(), Some("Lovelace"));
+        let role = ffi_user.role.unwrap();
+        assert_eq!(role.id.as_deref(), Some("role-1"));
+        assert_eq!(role.name.as_deref(), Some("user"));
+        let gpg_key = ffi_user.gpg_key.unwrap();
+        assert_eq!(gpg_key.id.as_deref(), Some("key-1"));
+        assert_eq!(gpg_key.user_id.as_deref(), Some("user-1"));
+        assert_eq!(
+            gpg_key.armored_key.as_deref(),
+            Some("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+        );
+        assert_eq!(gpg_key.bits, Some(2048));
+        assert_eq!(gpg_key.fingerprint.as_deref(), Some("ABCDEF"));
+        assert_eq!(gpg_key.key_created.as_deref(), Some(CREATED));
+    }
+
+    #[test]
+    fn test_group_keeps_every_field_and_group_users_without_user() {
+        let group: types::Group = parse(group_json());
+
+        let ffi_group = FfiGroup::from(group);
+
+        assert_eq!(ffi_group.id, "group-1");
+        assert_eq!(ffi_group.name, "Developers");
+        assert_eq!(ffi_group.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_group.modified.as_deref(), Some(MODIFIED));
+        assert_eq!(ffi_group.created_by.as_deref(), Some("user-1"));
+        assert_eq!(ffi_group.modified_by.as_deref(), Some("user-2"));
+        assert_eq!(ffi_group.deleted, Some(false));
+        let group_user = &ffi_group.groups_users[0];
+        assert_eq!(group_user.id.as_deref(), Some("gu-1"));
+        assert_eq!(group_user.group_id.as_deref(), Some("group-1"));
+        assert_eq!(group_user.user_id.as_deref(), Some("user-1"));
+        assert_eq!(group_user.is_admin, Some(true));
+        assert_eq!(group_user.created.as_deref(), Some(CREATED));
+    }
+
+    #[test]
+    fn test_permission_converts_nested_user_and_group() {
+        let permission: types::Permission = parse(permission_json());
+
+        let ffi_permission = FfiPermission::from(permission);
+
+        assert_eq!(ffi_permission.id.as_deref(), Some("permission-1"));
+        assert_eq!(ffi_permission.aco.as_deref(), Some("Resource"));
+        assert_eq!(
+            ffi_permission.aco_foreign_key.as_deref(),
+            Some("resource-1")
+        );
+        assert_eq!(ffi_permission.aro.as_deref(), Some("User"));
+        assert_eq!(ffi_permission.aro_foreign_key.as_deref(), Some("user-1"));
+        assert_eq!(ffi_permission.permission_type, Some(15));
+        assert_eq!(ffi_permission.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_permission.modified.as_deref(), Some(MODIFIED));
+        let user = ffi_permission.user.unwrap();
+        assert_eq!(user.id, "user-1");
+        assert_eq!(user.gpg_key.unwrap().fingerprint.as_deref(), Some("ABCDEF"));
+        let group = ffi_permission.group.unwrap();
+        assert_eq!(group.id, "group-1");
+        assert_eq!(group.groups_users[0].user_id.as_deref(), Some("user-1"));
+    }
+
+    #[test]
+    fn test_secret_data_keeps_password_totp_and_raw() {
+        let secret_data = types::SecretData {
+            password: Some("hunter2".into()),
+            description: Some("note".into()),
+            totp: Some(parse(json!({
+                "secret_key": "JBSWY3DPEHPK3PXP",
+                "algorithm": "SHA1",
+                "digits": 6,
+                "period": 30,
+                "issuer": "Passbolt"
+            }))),
+            raw: Some("raw secret".into()),
+        };
+
+        let ffi_secret_data = FfiSecretData::from(secret_data);
+
+        assert_eq!(ffi_secret_data.password.as_deref(), Some("hunter2"));
+        assert_eq!(ffi_secret_data.description.as_deref(), Some("note"));
+        assert_eq!(ffi_secret_data.raw.as_deref(), Some("raw secret"));
+        let totp = ffi_secret_data.totp.unwrap();
+        assert_eq!(totp.secret_key.as_deref(), Some("JBSWY3DPEHPK3PXP"));
+        assert_eq!(totp.algorithm.as_deref(), Some("SHA1"));
+        assert_eq!(totp.digits, Some(6));
+        assert_eq!(totp.period, Some(30));
+        assert_eq!(totp.issuer.as_deref(), Some("Passbolt"));
+    }
+
+    #[test]
+    fn test_tag_keeps_every_field() {
+        let tag: types::Tag = parse(json!({
+            "id": "tag-1", "slug": "#prod", "is_shared": true, "created": CREATED, "modified": MODIFIED
+        }));
+
+        let ffi_tag = FfiTag::from(tag);
+
+        assert_eq!(ffi_tag.id, "tag-1");
+        assert_eq!(ffi_tag.slug, "#prod");
+        assert_eq!(ffi_tag.is_shared, Some(true));
+        assert_eq!(ffi_tag.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_tag.modified.as_deref(), Some(MODIFIED));
+    }
+
+    #[test]
+    fn test_comment_keeps_every_field_and_converts_creator() {
+        let comment: types::Comment = parse(json!({
+            "id": "comment-1",
+            "parent_id": "comment-0",
+            "foreign_key": "resource-1",
+            "foreign_model": "Resource",
+            "content": "hello",
+            "created": CREATED,
+            "modified": MODIFIED,
+            "created_by": "user-1",
+            "modified_by": "user-2",
+            "creator": user_json("user-1")
+        }));
+
+        let ffi_comment = FfiComment::from(comment);
+
+        assert_eq!(ffi_comment.id, "comment-1");
+        assert_eq!(ffi_comment.parent_id.as_deref(), Some("comment-0"));
+        assert_eq!(ffi_comment.foreign_key.as_deref(), Some("resource-1"));
+        assert_eq!(ffi_comment.foreign_model.as_deref(), Some("Resource"));
+        assert_eq!(ffi_comment.content, "hello");
+        assert_eq!(ffi_comment.created.as_deref(), Some(CREATED));
+        assert_eq!(ffi_comment.modified.as_deref(), Some(MODIFIED));
+        assert_eq!(ffi_comment.created_by.as_deref(), Some("user-1"));
+        assert_eq!(ffi_comment.modified_by.as_deref(), Some("user-2"));
+        let creator = ffi_comment.creator.unwrap();
+        assert_eq!(creator.id, "user-1");
+        assert_eq!(creator.profile.unwrap().first_name.as_deref(), Some("Ada"));
+    }
+
+    #[rstest]
+    #[case::user(
+        json!({ "id": "user-1", "type": "user", "username": "ada", "profile": { "first_name": "Ada", "last_name": "L" } }),
+        Some("user"), Some("ada"), true, None
+    )]
+    #[case::group(
+        json!({ "id": "group-1", "type": "group", "name": "Developers" }),
+        Some("group"), None, false, Some("Developers")
+    )]
+    fn test_aro_keeps_every_field(
+        #[case] aro_json: Value,
+        #[case] expected_type: Option<&str>,
+        #[case] expected_username: Option<&str>,
+        #[case] expected_profile: bool,
+        #[case] expected_name: Option<&str>,
+    ) {
+        let aro: types::Aro = parse(aro_json);
+
+        let ffi_aro = FfiAro::from(aro);
+
+        assert_eq!(ffi_aro.aro_type.as_deref(), expected_type);
+        assert_eq!(ffi_aro.username.as_deref(), expected_username);
+        assert_eq!(ffi_aro.profile.is_some(), expected_profile);
+        assert_eq!(ffi_aro.name.as_deref(), expected_name);
+    }
+
+    #[test]
+    fn test_password_expiry_settings_keeps_every_field() {
+        let settings: types::PasswordExpirySettings = parse(json!({
+            "id": "settings-1",
+            "default_expiry_period_days": 90,
+            "policy_override": true,
+            "automatic_expiry": false,
+            "automatic_update": true
+        }));
+
+        let ffi_settings = FfiPasswordExpirySettings::from(settings);
+
+        assert_eq!(ffi_settings.id.as_deref(), Some("settings-1"));
+        assert_eq!(ffi_settings.default_expiry_period_days, Some(90));
+        assert_eq!(ffi_settings.policy_override, Some(true));
+        assert_eq!(ffi_settings.automatic_expiry, Some(false));
+        assert_eq!(ffi_settings.automatic_update, Some(true));
+    }
+
+    #[test]
+    fn test_delete_dry_runs_keep_every_count() {
+        let user_dry_run: types::UserDeleteDryRun = parse(json!({
+            "resources_sole_owner_count": 1,
+            "folders_sole_owner_count": 2,
+            "groups_sole_manager_count": 3
+        }));
+        let group_dry_run: types::GroupDeleteDryRun = parse(json!({
+            "resources_sole_group_count": 4,
+            "folders_sole_group_count": 5
+        }));
+
+        let ffi_user_dry_run = FfiUserDeleteDryRun::from(user_dry_run);
+        let ffi_group_dry_run = FfiGroupDeleteDryRun::from(group_dry_run);
+
+        assert_eq!(ffi_user_dry_run.resources_sole_owner_count, 1);
+        assert_eq!(ffi_user_dry_run.folders_sole_owner_count, 2);
+        assert_eq!(ffi_user_dry_run.groups_sole_manager_count, 3);
+        assert_eq!(ffi_group_dry_run.resources_sole_group_count, 4);
+        assert_eq!(ffi_group_dry_run.folders_sole_group_count, 5);
+    }
+
+    #[test]
+    fn test_folder_tree_converts_children_recursively() {
+        let leaf = types::FolderTreeNode {
+            folder: parse(folder_json("leaf", Some("middle"))),
+            children: Vec::new(),
+        };
+        let middle = types::FolderTreeNode {
+            folder: parse(folder_json("middle", Some("root"))),
+            children: vec![leaf],
+        };
+        let root = types::FolderTreeNode {
+            folder: parse(folder_json("root", None)),
+            children: vec![middle],
+        };
+
+        let ffi_root = FfiFolderTreeNode::from(root);
+
+        assert_eq!(ffi_root.folder.id, "root");
+        let ffi_middle = &ffi_root.children[0];
+        assert_eq!(ffi_middle.folder.id, "middle");
+        assert_eq!(ffi_middle.children[0].folder.id, "leaf");
+        assert!(ffi_middle.children[0].children.is_empty());
+    }
+
+    #[test]
+    fn test_resource_query_sets_filters_and_defaults_the_rest() {
+        let query = passbolt_sdk::ResourceQuery::from(FfiResourceQuery {
+            search: Some("mail".into()),
+            favorites_only: true,
+            owned_by_me: true,
+        });
+
+        assert_eq!(query.search.as_deref(), Some("mail"));
+        assert!(query.favorites_only);
+        assert!(query.owned_by_me);
+        assert_eq!(query.group_ids, Vec::<String>::new());
+        assert_eq!(query.folder_ids, Vec::<String>::new());
+        assert_eq!(query.pagination.page, None);
+        assert_eq!(query.pagination.limit, None);
+    }
+
+    #[test]
+    fn test_folder_query_sets_search_and_defaults_the_rest() {
+        let query = passbolt_sdk::FolderQuery::from(FfiFolderQuery {
+            search: Some("ops".into()),
+        });
+
+        assert_eq!(query.search.as_deref(), Some("ops"));
+        assert_eq!(query.group_id, None);
+        assert_eq!(query.parent_folder_id, None);
+        assert_eq!(query.pagination.page, None);
+    }
+
+    #[test]
+    fn test_user_query_sets_filters_and_defaults_the_rest() {
+        let query = passbolt_sdk::UserQuery::from(FfiUserQuery {
+            search: Some("ada".into()),
+            group_id: Some("group-1".into()),
+            admin_only: true,
+        });
+
+        assert_eq!(query.search.as_deref(), Some("ada"));
+        assert_eq!(query.group_id.as_deref(), Some("group-1"));
+        assert!(query.admin_only);
+        assert_eq!(query.resource_id, None);
+        assert_eq!(query.pagination.page, None);
     }
 }
