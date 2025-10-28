@@ -17,6 +17,38 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestCredentials, RequestInit, RequestMode, Response};
 
+#[wasm_bindgen]
+extern "C" {
+    /// The global `fetch`, available in windows and in workers (MV3 service worker)
+    /// alike, unlike `web_sys::window()`.
+    #[wasm_bindgen(js_name = fetch)]
+    fn global_fetch(request: &Request) -> js_sys::Promise;
+}
+
+const DEFAULT_HEADERS: [(&str, &str); 2] = [
+    ("Content-Type", "application/json"),
+    ("Accept", "application/json"),
+];
+
+/// JSON defaults followed by the caller's headers; a caller header replaces a
+/// default of the same name (case-insensitive), as `Headers.set` does.
+fn build_request_headers<'header>(
+    headers: &[(&'header str, &'header str)],
+) -> Vec<(&'header str, &'header str)> {
+    let mut merged: Vec<(&str, &str)> = Vec::with_capacity(DEFAULT_HEADERS.len() + headers.len());
+    for &(name, value) in DEFAULT_HEADERS.iter().chain(headers) {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|(existing_name, _)| existing_name.eq_ignore_ascii_case(name))
+        {
+            *existing = (name, value);
+        } else {
+            merged.push((name, value));
+        }
+    }
+    merged
+}
+
 /// Browser-native HTTP client using `fetch()` with cookie credentials.
 pub struct WasmHttpClient;
 
@@ -38,18 +70,11 @@ impl WasmHttpClient {
         request_init.set_credentials(RequestCredentials::Include);
         request_init.set_mode(RequestMode::Cors);
 
-        // Set headers
         let request_headers = Headers::new().map_err(|error| js_err("Headers::new", &error))?;
-        request_headers
-            .set("Content-Type", "application/json")
-            .map_err(|error| js_err("set Content-Type", &error))?;
-        request_headers
-            .set("Accept", "application/json")
-            .map_err(|error| js_err("set Accept", &error))?;
-        for &(name, value) in headers {
+        for (name, value) in build_request_headers(headers) {
             request_headers
                 .set(name, value)
-                .map_err(|error| js_err("set header", &error))?;
+                .map_err(|error| js_err(&format!("set header {name}"), &error))?;
         }
         request_init.set_headers(&request_headers);
 
@@ -62,10 +87,7 @@ impl WasmHttpClient {
         let request = Request::new_with_str_and_init(url, &request_init)
             .map_err(|error| js_err("Request::new", &error))?;
 
-        let window = web_sys::window()
-            .ok_or_else(|| TransportError::Http("No global window object available".into()))?;
-
-        let response_value = JsFuture::from(window.fetch_with_request(&request))
+        let response_value = JsFuture::from(global_fetch(&request))
             .await
             .map_err(|error| js_err(&format!("{method} {url}"), &error))?;
 
@@ -158,4 +180,68 @@ fn js_err(context: &str, err: &JsValue) -> TransportError {
         .or_else(|| js_sys::JSON::stringify(err).ok().map(String::from))
         .unwrap_or_else(|| format!("{err:?}"));
     TransportError::Network(format!("{context}: {message}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[test]
+    fn test_build_request_headers_without_caller_headers_is_json_defaults() {
+        let headers = build_request_headers(&[]);
+
+        assert_eq!(headers, DEFAULT_HEADERS.to_vec());
+    }
+
+    #[test]
+    fn test_build_request_headers_appends_caller_headers() {
+        let headers = build_request_headers(&[("X-CSRF-Token", "token")]);
+
+        assert_eq!(
+            headers,
+            vec![
+                ("Content-Type", "application/json"),
+                ("Accept", "application/json"),
+                ("X-CSRF-Token", "token"),
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case::same_case("Content-Type")]
+    #[case::other_case("content-type")]
+    fn test_build_request_headers_caller_replaces_default(#[case] name: &str) {
+        let headers = build_request_headers(&[(name, "text/plain")]);
+
+        assert_eq!(
+            headers,
+            vec![(name, "text/plain"), ("Accept", "application/json")]
+        );
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use super::*;
+
+    #[wasm_bindgen_test]
+    async fn test_get_fetches_without_a_window() {
+        let client = WasmHttpClient::new();
+
+        let response = client
+            .get("data:application/json,%7B%22ok%22%3Atrue%7D", &[])
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, br#"{"ok":true}"#);
+        assert!(response
+            .headers
+            .iter()
+            .any(|(name, value)| name == "content-type" && value == "application/json"));
+    }
 }
