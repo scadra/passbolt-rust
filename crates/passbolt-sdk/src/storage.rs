@@ -50,6 +50,7 @@ impl MemoryStorage {
     }
 }
 
+#[allow(clippy::unused_async_trait_impl)] // in-memory: nothing to await
 impl Storage for MemoryStorage {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, PassboltError> {
         let guard = self

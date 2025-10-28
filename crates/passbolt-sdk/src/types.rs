@@ -662,7 +662,7 @@ pub struct MetadataPrivateKeyPayload {
 #[derive(Debug, Clone)]
 pub struct FolderTreeNode {
     pub folder: Folder,
-    pub children: Vec<FolderTreeNode>,
+    pub children: Vec<Self>,
 }
 
 #[cfg(test)]
