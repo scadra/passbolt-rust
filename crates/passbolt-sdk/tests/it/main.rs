@@ -25,6 +25,7 @@ mod payloads;
 mod properties;
 mod requests;
 mod resources;
+mod security;
 mod sharing;
 mod totp;
 mod transport;

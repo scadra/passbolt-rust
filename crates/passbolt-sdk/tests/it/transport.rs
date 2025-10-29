@@ -166,7 +166,6 @@ async fn an_unreachable_server_is_a_transport_error() {
 }
 
 #[tokio::test]
-#[ignore = "SEC-1: redirects to another origin are followed with the CSRF token and the body"]
 async fn does_not_follow_redirects_to_another_origin() {
     let passbolt_server = MockServer::start().await;
     let other_server = MockServer::start().await;
