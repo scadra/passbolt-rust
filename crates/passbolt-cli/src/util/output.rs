@@ -101,10 +101,19 @@ pub fn print_json_with_columns<T: Serialize>(
     values: &[T],
     columns: &[String],
 ) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(&select_columns(values, columns)?)?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Serialize `values`, keeping only the fields named by `columns` (all of them if empty).
+fn select_columns<T: Serialize>(
+    values: &[T],
+    columns: &[String],
+) -> anyhow::Result<serde_json::Value> {
+    let serialized = serde_json::to_value(values)?;
     if columns.is_empty() {
-        let json = serde_json::to_string_pretty(values)?;
-        println!("{json}");
-        return Ok(());
+        return Ok(serialized);
     }
 
     let fields: Vec<String> = columns
@@ -112,35 +121,41 @@ pub fn print_json_with_columns<T: Serialize>(
         .map(|column| column_to_field(column))
         .collect();
 
-    let filtered: Vec<serde_json::Value> = values
-        .iter()
-        .map(|value| {
-            let serialized = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-            if let serde_json::Value::Object(map) = serialized {
-                let filtered_map: serde_json::Map<String, serde_json::Value> = fields
-                    .iter()
-                    .filter_map(|field| {
-                        map.get(field)
-                            .map(|field_value| (field.clone(), field_value.clone()))
-                    })
-                    .collect();
-                serde_json::Value::Object(filtered_map)
-            } else {
-                serde_json::Value::Object(serde_json::Map::new())
-            }
+    let serde_json::Value::Array(items) = serialized else {
+        return Ok(serialized);
+    };
+    let filtered = items
+        .into_iter()
+        .map(|item| {
+            let serde_json::Value::Object(map) = item else {
+                return serde_json::Value::Object(serde_json::Map::new());
+            };
+            let filtered_map: serde_json::Map<String, serde_json::Value> = fields
+                .iter()
+                .filter_map(|field| {
+                    map.get(field)
+                        .map(|field_value| (field.clone(), field_value.clone()))
+                })
+                .collect();
+            serde_json::Value::Object(filtered_map)
         })
         .collect();
-
-    let json = serde_json::to_string_pretty(&filtered)?;
-    println!("{json}");
-    Ok(())
+    Ok(serde_json::Value::Array(filtered))
 }
 
-/// Print key-value pairs.
+/// Print key-value pairs, stripped of control characters like table cells.
 pub fn print_kv(pairs: &[(&str, &str)]) {
     for (key, value) in pairs {
-        println!("{}: {}", key.bold(), value);
+        println!("{}", format_kv(key, value));
     }
+}
+
+fn format_kv(key: &str, value: &str) -> String {
+    format!(
+        "{}: {}",
+        strip_control_chars(key).bold(),
+        strip_control_chars(value)
+    )
 }
 
 #[cfg(test)]
@@ -204,22 +219,65 @@ mod tests {
     }
 
     #[test]
-    fn test_columns_empty_returns_ok() {
-        let items = make_items();
-        assert!(print_json_with_columns(&items, &[]).is_ok());
+    fn test_select_columns_without_columns_keeps_every_field() {
+        let selected = select_columns(&make_items(), &[]).unwrap();
+
+        assert_eq!(
+            selected,
+            serde_json::json!([{"id": "abc", "name": "Test", "secret": "s3cr3t"}])
+        );
     }
 
     #[test]
-    fn test_columns_subset_returns_ok() {
-        let items = make_items();
-        let columns = vec!["id".to_string(), "name".to_string()];
-        assert!(print_json_with_columns(&items, &columns).is_ok());
+    fn test_select_columns_keeps_only_the_given_columns() {
+        let columns = vec!["id".to_string(), "Name".to_string()];
+
+        let selected = select_columns(&make_items(), &columns).unwrap();
+
+        assert_eq!(selected, serde_json::json!([{"id": "abc", "name": "Test"}]));
     }
 
     #[test]
-    fn test_columns_unknown_returns_ok() {
-        let items = make_items();
-        let columns = vec!["nonexistent_column".to_string()];
-        assert!(print_json_with_columns(&items, &columns).is_ok());
+    fn test_select_columns_skips_an_unknown_column() {
+        let columns = vec!["id".to_string(), "nonexistent_column".to_string()];
+
+        let selected = select_columns(&make_items(), &columns).unwrap();
+
+        assert_eq!(selected, serde_json::json!([{"id": "abc"}]));
+    }
+
+    #[test]
+    fn test_select_columns_maps_members_to_groups_users() {
+        let groups = vec![serde_json::json!({
+            "id": "group",
+            "groups_users": [{"user_id": "ada"}],
+            "secret": "s3cr3t"
+        })];
+        let columns = vec!["Members".to_string()];
+
+        let selected = select_columns(&groups, &columns).unwrap();
+
+        assert_eq!(
+            selected,
+            serde_json::json!([{"groups_users": [{"user_id": "ada"}]}])
+        );
+    }
+
+    // ─── print_kv ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_format_kv_strips_control_characters_from_the_value() {
+        let line = format_kv("Name", "\x1b[31mred\x07");
+
+        assert!(line.ends_with(": [31mred"), "{line:?}");
+        assert!(!line.contains("\x1b[31m"), "{line:?}");
+    }
+
+    #[test]
+    fn test_format_kv_strips_control_characters_from_the_key() {
+        let line = format_kv("Na\x1b]0;title\x07me", "value");
+
+        assert!(!line.contains("\x1b]0;"), "{line:?}");
+        assert!(line.contains("Na]0;titleme"), "{line:?}");
     }
 }

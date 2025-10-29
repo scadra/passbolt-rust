@@ -22,7 +22,9 @@ mod http;
 
 use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::error::PassboltError;
+use passbolt_sdk::types::{SecretData, TotpData};
 use passbolt_sdk::PassboltSdk;
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::http::WasmHttpClient;
@@ -37,6 +39,49 @@ fn to_js_error(e: PassboltError) -> JsError {
 
 fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsError> {
     serde_wasm_bindgen::to_value(val).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Decrypted secret as exposed to JS.
+///
+/// `SecretData.raw` is not serialized by the SDK, so the password of a
+/// "password-string" resource is folded into `password` here.
+#[derive(Serialize)]
+struct JsSecretData {
+    password: Option<String>,
+    description: Option<String>,
+    totp: Option<TotpData>,
+}
+
+impl From<SecretData> for JsSecretData {
+    fn from(secret: SecretData) -> Self {
+        Self {
+            password: secret.password.or(secret.raw),
+            description: secret.description,
+            totp: secret.totp,
+        }
+    }
+}
+
+fn build_sdk_config(
+    server_url: String,
+    private_key_armored: String,
+    passphrase: String,
+) -> SdkConfig {
+    SdkConfig {
+        server_url,
+        private_key_armored,
+        passphrase: secrecy::SecretString::from(passphrase),
+        mfa_mode: String::new(),
+        mfa_totp_token: String::new(),
+        mfa_totp_offset: 0,
+        mfa_retrys: 0,
+        tls_skip_verify: false,
+        tls_client_cert: String::new(),
+        tls_client_private_key: String::new(),
+        proxy: String::new(),
+        server_verify_enc_token: String::new(),
+        server_verify_token: String::new(),
+    }
 }
 
 // ── PassboltSession ──────────────────────────────────────────────────────────
@@ -64,21 +109,7 @@ impl PassboltSession {
         passphrase: String,
     ) -> Result<Self, JsError> {
         let http = WasmHttpClient::new();
-        let config = SdkConfig {
-            server_url,
-            private_key_armored,
-            passphrase: secrecy::SecretString::from(passphrase),
-            mfa_mode: String::new(),
-            mfa_totp_token: String::new(),
-            mfa_totp_offset: 0,
-            mfa_retrys: 0,
-            tls_skip_verify: false,
-            tls_client_cert: String::new(),
-            tls_client_private_key: String::new(),
-            proxy: String::new(),
-            server_verify_enc_token: String::new(),
-            server_verify_token: String::new(),
-        };
+        let config = build_sdk_config(server_url, private_key_armored, passphrase);
 
         let client = Client::login(http, &config, None, 3)
             .await
@@ -134,7 +165,7 @@ impl PassboltSession {
             .decrypt_resource_secret(&resource)
             .await
             .map_err(to_js_error)?;
-        to_js_value(&secret)
+        to_js_value(&JsSecretData::from(secret))
     }
 
     /// Delete a resource.
@@ -299,4 +330,138 @@ pub fn get_key_fingerprint(private_key_armored: &str) -> Result<String, JsError>
     let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
         .map_err(|error| JsError::new(&error.to_string()))?;
     Ok(key.fingerprint.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use secrecy::ExposeSecret;
+    use serde_json::json;
+
+    use super::*;
+
+    const SERVER_PRIVATE: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/server_private.asc");
+    const SERVER_PUBLIC: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/server_public.asc");
+
+    fn secret(password: Option<&str>, raw: Option<&str>) -> SecretData {
+        SecretData {
+            password: password.map(String::from),
+            raw: raw.map(String::from),
+            ..SecretData::default()
+        }
+    }
+
+    #[rstest]
+    #[case::password_string(None, Some("raw password"), Some("raw password"))]
+    #[case::json_secret(Some("json password"), None, Some("json password"))]
+    #[case::password_wins_over_raw(Some("json password"), Some("raw"), Some("json password"))]
+    #[case::empty(None, None, None)]
+    fn test_js_secret_data_password_falls_back_to_raw(
+        #[case] password: Option<&str>,
+        #[case] raw: Option<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        let js_secret = JsSecretData::from(secret(password, raw));
+
+        assert_eq!(js_secret.password.as_deref(), expected);
+    }
+
+    #[test]
+    fn test_js_secret_data_serializes_password_of_password_string_resource() {
+        let js_secret = JsSecretData::from(secret(None, Some("raw password")));
+
+        let serialized = serde_json::to_value(&js_secret).unwrap();
+
+        assert_eq!(
+            serialized,
+            json!({ "password": "raw password", "description": null, "totp": null })
+        );
+    }
+
+    #[test]
+    fn test_js_secret_data_keeps_description_and_totp() {
+        let secret_data: SecretData = serde_json::from_value(json!({
+            "password": "pw",
+            "description": "note",
+            "totp": { "secret_key": "JBSWY3DPEHPK3PXP", "algorithm": "SHA1", "digits": 6, "period": 30, "issuer": null }
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(JsSecretData::from(secret_data)).unwrap();
+
+        assert_eq!(serialized["description"], "note");
+        assert_eq!(serialized["totp"]["secret_key"], "JBSWY3DPEHPK3PXP");
+        assert_eq!(serialized["totp"]["digits"], 6);
+    }
+
+    #[test]
+    fn test_build_sdk_config_copies_credentials_without_mfa_or_tls_bypass() {
+        let config = build_sdk_config(
+            "https://passbolt.test".into(),
+            "armored key".into(),
+            "secret passphrase".into(),
+        );
+
+        assert_eq!(config.server_url, "https://passbolt.test");
+        assert_eq!(config.private_key_armored, "armored key");
+        assert_eq!(config.passphrase.expose_secret(), "secret passphrase");
+        assert_eq!(config.mfa_mode, "");
+        assert!(!config.tls_skip_verify);
+        assert_eq!(config.proxy, "");
+    }
+
+    #[test]
+    fn test_encrypt_then_decrypt_message_round_trips() {
+        let armored = encrypt_message(b"top secret", vec![SERVER_PUBLIC.into()]).unwrap();
+
+        let plaintext = decrypt_message(&armored, SERVER_PRIVATE, "").unwrap();
+
+        assert_eq!(plaintext, b"top secret");
+    }
+
+    #[test]
+    fn test_get_key_fingerprint_is_uppercase_hex() {
+        let fingerprint = get_key_fingerprint(SERVER_PRIVATE).unwrap();
+
+        assert_eq!(fingerprint.len(), 40);
+        assert!(fingerprint
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'A'..='F')));
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use super::*;
+
+    const SERVER_PRIVATE: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/server_private.asc");
+    const BETTY_PUBLIC: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
+
+    #[wasm_bindgen_test]
+    fn test_decrypt_message_with_wrong_key_is_error() {
+        let armored = encrypt_message(b"for betty", vec![BETTY_PUBLIC.into()]).unwrap();
+
+        let result = decrypt_message(&armored, SERVER_PRIVATE, "");
+
+        assert!(result.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn test_js_secret_data_exposes_raw_password_to_js() {
+        let secret = SecretData {
+            raw: Some("raw password".into()),
+            ..SecretData::default()
+        };
+
+        let value = to_js_value(&JsSecretData::from(secret)).unwrap();
+
+        let password = js_sys::Reflect::get(&value, &"password".into()).unwrap();
+        assert_eq!(password.as_string().as_deref(), Some("raw password"));
+    }
 }

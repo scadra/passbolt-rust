@@ -1,11 +1,11 @@
 // Passbolt ~ Open source password manager for teams
-// Copyright (column) 2025 Passbolt SA (https://www.passbolt.com)
+// Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
 //
 // Licensed under GNU Affero General Public License version 3 of the or any later version.
 // For full copyright and license information, please see the LICENSE
 // Redistributions of files must retain the above copyright notice.
 //
-// @copyright     Copyright (column) 2025 Passbolt SA (https://www.passbolt.com)
+// @copyright     Copyright (c) 2025 Passbolt SA (https://www.passbolt.com)
 // @license       https://opensource.org/licenses/AGPL-3.0 AGPL License
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
@@ -38,23 +38,10 @@ async fn main() -> Result<()> {
         Config::set_path(path.into());
     }
 
-    // Load config and apply CLI overrides
-    let mut config = Config::load().unwrap_or_default();
-    apply_cli_overrides(&cli, &mut config)?;
-
-    if cli.debug {
-        eprintln!("[debug] server: {}", config.server_address);
-    }
-
     match &cli.command {
         // ── Configure ──────────────────────────────────────────────────────
         Commands::Configure(args) => {
             cli::configure::run(args)?;
-        }
-
-        // ── Verify ─────────────────────────────────────────────────────────
-        Commands::Verify(args) => {
-            cli::verify::run(args, &mut config).await?;
         }
 
         // ── Shell completions ──────────────────────────────────────────────
@@ -69,8 +56,15 @@ async fn main() -> Result<()> {
             cli::gendoc::run_gendoc(args)?;
         }
 
+        // ── Verify ─────────────────────────────────────────────────────────
+        Commands::Verify(args) => {
+            let mut config = load_config(&cli)?;
+            cli::verify::run(args, &mut config).await?;
+        }
+
         // All other commands require a connected client
         command => {
+            let config = load_config(&cli)?;
             let client = session::get_client(&config).await?;
             let result = dispatch(command, &client, cli.json, config.workers).await;
             client.logout().await;
@@ -79,6 +73,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Load the config file and environment, then apply the command-line flags over them.
+fn load_config(cli: &Cli) -> Result<Config> {
+    let mut config = Config::load()?;
+    apply_cli_overrides(cli, &mut config)?;
+    if cli.debug {
+        eprintln!("[debug] server: {}", config.server_address);
+    }
+    Ok(config)
 }
 
 /// Apply CLI flag overrides on top of loaded config.
@@ -137,9 +141,7 @@ fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> Result<()> {
         config.timeout.clone_from(value);
     }
     if let Some(value) = cli.workers {
-        if value > 0 {
-            config.workers = value;
-        }
+        config.workers = value;
     }
     if cli.debug {
         config.debug = true;
@@ -929,4 +931,63 @@ async fn dispatch(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_from_file(text: &str) -> Config {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        Config::load_from(&path).unwrap()
+    }
+
+    fn overridden(arguments: &[&str], mut config: Config) -> Config {
+        let cli = Cli::try_parse_from(arguments).unwrap();
+        apply_cli_overrides(&cli, &mut config).unwrap();
+        config
+    }
+
+    #[test]
+    fn test_overrides_keep_the_file_settings_without_flags() {
+        let config = config_from_file(
+            "mfa_mode = \"none\"\nmfa_totp_offset = 5\nmfa_retrys = 7\n\
+             mfa_delay = \"2s\"\ntimeout = \"30s\"\nworkers = 4\n",
+        );
+
+        let config = overridden(&["passbolt", "list", "resource"], config);
+
+        assert_eq!(config.mfa_mode, "none");
+        assert_eq!(config.mfa_totp_offset, 5);
+        assert_eq!(config.mfa_retrys, 7);
+        assert_eq!(config.mfa_delay, "2s");
+        assert_eq!(config.timeout, "30s");
+        assert_eq!(config.workers, 4);
+    }
+
+    #[test]
+    fn test_overrides_put_the_flags_over_the_file() {
+        let config = config_from_file("mfa_retrys = 7\nworkers = 4\ntimeout = \"30s\"\n");
+
+        let config = overridden(
+            &[
+                "passbolt",
+                "--mfa-retrys",
+                "2",
+                "--workers",
+                "0",
+                "--timeout",
+                "5s",
+                "list",
+                "resource",
+            ],
+            config,
+        );
+
+        assert_eq!(config.mfa_retrys, 2);
+        assert_eq!(config.workers, 0);
+        assert_eq!(config.timeout, "5s");
+    }
 }

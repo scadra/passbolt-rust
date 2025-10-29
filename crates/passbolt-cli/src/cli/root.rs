@@ -41,34 +41,24 @@ pub struct Cli {
     #[arg(long, global = true, env = "PASSBOLT_USER_PASSWORD")]
     pub user_password: Option<String>,
 
-    /// MFA mode: interactive-totp | non-interactive-totp | none
-    #[arg(
-        long,
-        global = true,
-        default_value = "interactive-totp",
-        env = "PASSBOLT_MFA_MODE"
-    )]
+    /// MFA mode: interactive-totp | non-interactive-totp | none [default: interactive-totp]
+    #[arg(long, global = true, env = "PASSBOLT_MFA_MODE")]
     pub mfa_mode: Option<String>,
 
     /// TOTP token for non-interactive MFA
     #[arg(long, global = true, env = "PASSBOLT_MFA_TOTP_TOKEN")]
     pub mfa_totp_token: Option<String>,
 
-    /// TOTP clock offset in seconds
-    #[arg(
-        long,
-        global = true,
-        default_value = "0",
-        env = "PASSBOLT_MFA_TOTP_OFFSET"
-    )]
+    /// TOTP clock offset in seconds [default: 0]
+    #[arg(long, global = true, env = "PASSBOLT_MFA_TOTP_OFFSET")]
     pub mfa_totp_offset: Option<i64>,
 
-    /// Number of MFA retries
-    #[arg(long, global = true, default_value = "3", env = "PASSBOLT_MFA_RETRYS")]
+    /// Number of MFA retries [default: 3]
+    #[arg(long, global = true, env = "PASSBOLT_MFA_RETRYS")]
     pub mfa_retrys: Option<u32>,
 
-    /// Delay between MFA retries (e.g. 10s)
-    #[arg(long, global = true, default_value = "10s", env = "PASSBOLT_MFA_DELAY")]
+    /// Delay between MFA retries (e.g. 10s) [default: 10s]
+    #[arg(long, global = true, env = "PASSBOLT_MFA_DELAY")]
     pub mfa_delay: Option<String>,
 
     /// Skip TLS certificate verification (insecure)
@@ -99,12 +89,12 @@ pub struct Cli {
     #[arg(long, global = true, env = "PASSBOLT_RESOLVE")]
     pub resolve: Option<String>,
 
-    /// Request timeout (e.g. 1m, 30s)
-    #[arg(long, global = true, default_value = "1m", env = "PASSBOLT_TIMEOUT")]
+    /// Request timeout (e.g. 1m, 30s) [default: 1m]
+    #[arg(long, global = true, env = "PASSBOLT_TIMEOUT")]
     pub timeout: Option<String>,
 
-    /// Number of parallel workers (0 = auto)
-    #[arg(long, global = true, default_value = "0", env = "PASSBOLT_WORKERS")]
+    /// Number of parallel workers (0 = auto) [default: 0]
+    #[arg(long, global = true, env = "PASSBOLT_WORKERS")]
     pub workers: Option<usize>,
 
     /// Enable debug output

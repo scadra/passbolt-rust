@@ -52,7 +52,7 @@ pub async fn share_resource<H: HttpClient>(
     let mut secret_payloads = Vec::new();
     for user_id in user_ids {
         let encrypted = client
-            .encrypt_secret_for_users(&secret_json, &[user_id.clone()])
+            .encrypt_secret_for_users(&secret_json, std::slice::from_ref(user_id))
             .await?;
         secret_payloads.extend(encrypted);
     }

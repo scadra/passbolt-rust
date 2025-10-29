@@ -29,6 +29,7 @@
 //! ```
 
 mod error;
+mod mfa;
 mod types;
 
 uniffi::setup_scaffolding!();
@@ -37,9 +38,10 @@ use std::sync::{Arc, LazyLock};
 
 use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::platform::native::{NativeHttpClient, NativeHttpConfig};
-use passbolt_sdk::PassboltSdk;
+use passbolt_sdk::{MfaProvider, PassboltSdk};
 
 use crate::error::PassboltFfiError;
+use crate::mfa::{TotpSecretProvider, NON_INTERACTIVE_TOTP};
 use crate::types::{
     FfiAro, FfiComment, FfiFavorite, FfiFolder, FfiFolderQuery, FfiFolderTreeNode, FfiGroup,
     FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission, FfiResource, FfiResourceQuery,
@@ -56,6 +58,54 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .build()
         .expect("Failed to create tokio runtime")
 });
+
+const MFA_RETRY_COUNT: u32 = 3;
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.trim().is_empty())
+}
+
+fn build_http_config(tls_skip_verify: bool, proxy: Option<String>) -> NativeHttpConfig {
+    NativeHttpConfig {
+        tls_skip_verify,
+        client_cert_pem: None,
+        client_key_pem: None,
+        proxy_url: non_empty(proxy),
+        resolve: Vec::new(),
+        timeout: None,
+    }
+}
+
+/// An empty or blank `mfa_totp_token` means no non-interactive MFA.
+fn build_sdk_config(
+    server_url: String,
+    private_key_armored: String,
+    passphrase: String,
+    tls_skip_verify: bool,
+    proxy: Option<String>,
+    mfa_totp_token: Option<String>,
+) -> SdkConfig {
+    let mfa_totp_token = non_empty(mfa_totp_token);
+    SdkConfig {
+        server_url,
+        private_key_armored,
+        passphrase: secrecy::SecretString::from(passphrase),
+        mfa_mode: if mfa_totp_token.is_some() {
+            NON_INTERACTIVE_TOTP.into()
+        } else {
+            String::new()
+        },
+        mfa_totp_token: mfa_totp_token.unwrap_or_default(),
+        mfa_totp_offset: 0,
+        mfa_retrys: MFA_RETRY_COUNT,
+        tls_skip_verify,
+        tls_client_cert: String::new(),
+        tls_client_private_key: String::new(),
+        proxy: non_empty(proxy).unwrap_or_default(),
+        server_verify_enc_token: String::new(),
+        server_verify_token: String::new(),
+    }
+}
 
 // ── PassboltClient ──────────────────────────────────────────────────────────
 
@@ -90,6 +140,9 @@ impl PassboltClient {
     }
 
     /// Authenticate with advanced TLS/proxy options.
+    ///
+    /// `mfa_totp_token` is the base32 TOTP secret used to answer the MFA
+    /// challenge without prompting; `None` or an empty string disables it.
     #[uniffi::constructor]
     pub fn login_with_options(
         server_url: String,
@@ -99,42 +152,32 @@ impl PassboltClient {
         proxy: Option<String>,
         mfa_totp_token: Option<String>,
     ) -> Result<Arc<Self>, PassboltFfiError> {
+        let http_config = build_http_config(tls_skip_verify, proxy.clone());
+        let config = build_sdk_config(
+            server_url,
+            private_key_armored,
+            passphrase,
+            tls_skip_verify,
+            proxy,
+            mfa_totp_token,
+        );
+        let mfa_provider = TotpSecretProvider::from_config(&config);
         RUNTIME.block_on(async {
-            let http_config = NativeHttpConfig {
-                tls_skip_verify,
-                client_cert_pem: None,
-                client_key_pem: None,
-                proxy_url: proxy.clone(),
-                resolve: Vec::new(),
-            };
             let http =
                 NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
                     message: error.to_string(),
                 })?;
 
-            let config = SdkConfig {
-                server_url,
-                private_key_armored,
-                passphrase: secrecy::SecretString::from(passphrase),
-                mfa_mode: if mfa_totp_token.is_some() {
-                    "non-interactive-totp".into()
-                } else {
-                    String::new()
-                },
-                mfa_totp_token: mfa_totp_token.unwrap_or_default(),
-                mfa_totp_offset: 0,
-                mfa_retrys: 3,
-                tls_skip_verify,
-                tls_client_cert: String::new(),
-                tls_client_private_key: String::new(),
-                proxy: proxy.unwrap_or_default(),
-                server_verify_enc_token: String::new(),
-                server_verify_token: String::new(),
-            };
-
-            let client = Client::login(http, &config, None, 3)
-                .await
-                .map_err(PassboltFfiError::from)?;
+            let client = Client::login(
+                http,
+                &config,
+                mfa_provider
+                    .as_ref()
+                    .map(|provider| provider as &dyn MfaProvider),
+                config.mfa_retrys,
+            )
+            .await
+            .map_err(PassboltFfiError::from)?;
 
             Ok(Arc::new(Self { inner: client }))
         })
@@ -534,4 +577,167 @@ pub fn get_key_fingerprint(private_key_armored: String) -> Result<String, Passbo
         }
     })?;
     Ok(key.fingerprint.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use secrecy::ExposeSecret;
+
+    use super::*;
+
+    const ADA_PRIVATE: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_private.asc");
+    const ADA_PUBLIC: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_public.asc");
+    const BETTY_PUBLIC: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
+    const SERVER_PRIVATE: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/server_private.asc");
+    const SERVER_PUBLIC: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/server_public.asc");
+
+    fn config_with(proxy: Option<&str>, mfa_totp_token: Option<&str>) -> SdkConfig {
+        build_sdk_config(
+            "https://passbolt.test".into(),
+            "armored key".into(),
+            "secret passphrase".into(),
+            true,
+            proxy.map(String::from),
+            mfa_totp_token.map(String::from),
+        )
+    }
+
+    #[rstest]
+    #[case::absent(None)]
+    #[case::empty(Some(""))]
+    #[case::blank(Some("   "))]
+    fn test_build_sdk_config_without_token_disables_mfa(#[case] mfa_totp_token: Option<&str>) {
+        let config = config_with(None, mfa_totp_token);
+
+        assert_eq!(config.mfa_mode, "");
+        assert_eq!(config.mfa_totp_token, "");
+        assert!(TotpSecretProvider::from_config(&config).is_none());
+    }
+
+    #[test]
+    fn test_build_sdk_config_with_token_enables_non_interactive_totp() {
+        let config = config_with(None, Some("JBSWY3DPEHPK3PXP"));
+
+        assert_eq!(config.mfa_mode, NON_INTERACTIVE_TOTP);
+        assert_eq!(config.mfa_totp_token, "JBSWY3DPEHPK3PXP");
+        assert!(TotpSecretProvider::from_config(&config).is_some());
+    }
+
+    #[test]
+    fn test_build_sdk_config_copies_credentials_and_tls_flag() {
+        let config = config_with(None, None);
+
+        assert_eq!(config.server_url, "https://passbolt.test");
+        assert_eq!(config.private_key_armored, "armored key");
+        assert_eq!(config.passphrase.expose_secret(), "secret passphrase");
+        assert!(config.tls_skip_verify);
+        assert_eq!(config.mfa_retrys, MFA_RETRY_COUNT);
+    }
+
+    #[rstest]
+    #[case::absent(None, "")]
+    #[case::empty(Some(""), "")]
+    #[case::set(Some("http://proxy:3128"), "http://proxy:3128")]
+    fn test_build_sdk_config_maps_proxy(#[case] proxy: Option<&str>, #[case] expected: &str) {
+        let config = config_with(proxy, None);
+
+        assert_eq!(config.proxy, expected);
+    }
+
+    #[rstest]
+    #[case::absent(None, None)]
+    #[case::empty(Some(""), None)]
+    #[case::set(Some("http://proxy:3128"), Some("http://proxy:3128"))]
+    fn test_build_http_config_maps_proxy_and_tls(
+        #[case] proxy: Option<&str>,
+        #[case] expected: Option<&str>,
+        #[values(true, false)] tls_skip_verify: bool,
+    ) {
+        let http_config = build_http_config(tls_skip_verify, proxy.map(String::from));
+
+        assert_eq!(http_config.proxy_url.as_deref(), expected);
+        assert_eq!(http_config.tls_skip_verify, tls_skip_verify);
+        assert!(http_config.client_cert_pem.is_none());
+        assert!(http_config.client_key_pem.is_none());
+        assert_eq!(http_config.resolve, Vec::new());
+    }
+
+    #[test]
+    fn test_encrypt_then_decrypt_message_round_trips() {
+        let armored = encrypt_message(b"top secret".to_vec(), vec![SERVER_PUBLIC.into()]).unwrap();
+
+        let plaintext = decrypt_message(armored, SERVER_PRIVATE.into(), String::new()).unwrap();
+
+        assert_eq!(plaintext, b"top secret");
+    }
+
+    #[test]
+    fn test_encrypt_message_for_several_keys_decrypts_with_each() {
+        let armored = encrypt_message(
+            b"shared".to_vec(),
+            vec![SERVER_PUBLIC.into(), ADA_PUBLIC.into()],
+        )
+        .unwrap();
+
+        let by_server = decrypt_message(armored.clone(), SERVER_PRIVATE.into(), String::new());
+        let by_ada = decrypt_message(armored, ADA_PRIVATE.into(), "ada-passphrase".into());
+
+        assert_eq!(by_server.unwrap(), b"shared");
+        assert_eq!(by_ada.unwrap(), b"shared");
+    }
+
+    #[test]
+    fn test_decrypt_message_with_wrong_key_is_crypto_error() {
+        let armored = encrypt_message(b"for betty".to_vec(), vec![BETTY_PUBLIC.into()]).unwrap();
+
+        let error = decrypt_message(armored, SERVER_PRIVATE.into(), String::new()).unwrap_err();
+
+        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+    }
+
+    #[test]
+    fn test_decrypt_message_with_wrong_passphrase_is_crypto_error() {
+        let armored = encrypt_message(b"for ada".to_vec(), vec![ADA_PUBLIC.into()]).unwrap();
+
+        let error = decrypt_message(armored, ADA_PRIVATE.into(), "wrong".into()).unwrap_err();
+
+        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+    }
+
+    #[test]
+    fn test_decrypt_message_with_invalid_private_key_is_crypto_error() {
+        let error =
+            decrypt_message("not a message".into(), "not a key".into(), String::new()).unwrap_err();
+
+        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+    }
+
+    #[test]
+    fn test_encrypt_message_with_invalid_public_key_is_crypto_error() {
+        let error = encrypt_message(b"data".to_vec(), vec!["not a key".into()]).unwrap_err();
+
+        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+    }
+
+    #[test]
+    fn test_get_key_fingerprint_is_uppercase_hex() {
+        let fingerprint = get_key_fingerprint(SERVER_PRIVATE.into()).unwrap();
+
+        assert_eq!(fingerprint.len(), 40);
+        assert!(fingerprint
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'A'..='F')));
+    }
+
+    #[test]
+    fn test_get_key_fingerprint_with_invalid_key_is_crypto_error() {
+        let error = get_key_fingerprint("not a key".into()).unwrap_err();
+
+        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+    }
 }

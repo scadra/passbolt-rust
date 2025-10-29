@@ -32,6 +32,8 @@ pub struct NativeHttpConfig {
     pub proxy_url: Option<String>,
     /// Host names pinned to an address, like `curl --resolve`.
     pub resolve: Vec<(String, SocketAddr)>,
+    /// Whole-request timeout (connect, send and read); `None` waits forever.
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// Native HTTP client backed by `reqwest`.
@@ -73,6 +75,9 @@ impl NativeHttpClient {
             }
         }
 
+        if let Some(timeout) = config.timeout {
+            builder = builder.timeout(timeout);
+        }
         for (host, address) in &config.resolve {
             builder = builder.resolve(host, *address);
         }
