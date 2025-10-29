@@ -30,3 +30,44 @@ pub fn folder_fields(folder: &Folder) -> HashMap<String, String> {
 pub fn filter_folders(folders: Vec<Folder>, filters: &[Filter]) -> Vec<Folder> {
     filter_entities(folders, filters, folder_fields)
 }
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use serde_json::json;
+
+    use super::*;
+
+    fn folder(value: serde_json::Value) -> Folder {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[rstest]
+    #[case::id("id", "f2")]
+    #[case::name("name", "Ops")]
+    #[case::folder_parent_id("folder_parent_id", "f1")]
+    fn test_folder_fields(#[case] field: &str, #[case] expected: &str) {
+        let ops = folder(json!({ "id": "f2", "name": "Ops", "folder_parent_id": "f1" }));
+
+        assert_eq!(folder_fields(&ops)[field], expected);
+    }
+
+    #[test]
+    fn test_folder_fields_root_has_an_empty_parent() {
+        let root = folder(json!({ "id": "f1", "name": "Root" }));
+
+        assert_eq!(folder_fields(&root)["folder_parent_id"], "");
+    }
+
+    #[test]
+    fn test_filter_folders_by_parent() {
+        let root = folder(json!({ "id": "f1", "name": "Root" }));
+        let child = folder(json!({ "id": "f2", "name": "Ops", "folder_parent_id": "f1" }));
+        let filter = Filter::parse("folder_parent_id=f1").unwrap();
+
+        let folders = filter_folders(vec![root, child], &[filter]);
+
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, "f2");
+    }
+}

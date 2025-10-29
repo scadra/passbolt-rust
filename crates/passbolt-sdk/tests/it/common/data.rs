@@ -181,3 +181,36 @@ pub fn auth_verify(server: &TestKey) -> Value {
     verify_response["keydata"] = server.public.into();
     verify_response
 }
+
+/// v4 resource as listed by `/resources.json`, without secret.
+pub fn listed_resource(id: &str) -> Value {
+    let mut resource = fixture!("resource_v4.json");
+    resource["id"] = id.into();
+    resource
+}
+
+pub fn listed_resources(ids: &[&str]) -> Value {
+    ids.iter().map(|id| listed_resource(id)).collect()
+}
+
+pub fn tag(slug: &str) -> Value {
+    let mut tag = fixture!("tag.json");
+    tag["slug"] = slug.into();
+    tag
+}
+
+pub fn comment() -> Value {
+    fixture!("comment.json")
+}
+
+pub fn favorite() -> Value {
+    fixture!("favorite.json")
+}
+
+pub fn aros() -> Value {
+    fixture!("aros.json")
+}
+
+pub fn password_expiry_settings() -> Value {
+    fixture!("password_expiry_settings.json")
+}

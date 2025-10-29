@@ -117,3 +117,49 @@ impl From<anyhow::Error> for PassboltError {
         Self::Other(format!("{error:#}"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case::transport(TransportError::Timeout("30s".into()).into(), "Request timed out: 30s")]
+    #[case::login(AuthError::LoginFailed("bad key".into()).into(), "Login failed: bad key")]
+    #[case::mfa_failed(
+        AuthError::MfaFailed { attempts: 3, message: "The OTP is not valid.".into() }.into(),
+        "MFA verification failed after 3 attempt(s): The OTP is not valid."
+    )]
+    #[case::crypto(CryptoError::Decrypt("no key".into()).into(), "PGP decryption failed: no key")]
+    #[case::api(
+        ApiError { status: 404, message: "Not found".into(), validation_errors: None }.into(),
+        "API error (404): Not found"
+    )]
+    #[case::not_found(PassboltError::NotFound("r1".into()), "Resource not found: r1")]
+    #[case::config(PassboltError::Config("no url".into()), "Configuration error: no url")]
+    #[case::invalid_argument(PassboltError::InvalidArgument("--name".into()), "Invalid argument: --name")]
+    #[case::other(PassboltError::Other("as is".into()), "as is")]
+    fn test_error_message(#[case] error: PassboltError, #[case] expected: &str) {
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[test]
+    fn test_from_anyhow_keeps_the_context_chain() {
+        let error = anyhow::anyhow!("root cause").context("while reading");
+
+        let error = PassboltError::from(error);
+
+        assert!(matches!(error, PassboltError::Other(_)), "{error:?}");
+        assert_eq!(error.to_string(), "while reading: root cause");
+    }
+
+    #[test]
+    fn test_from_json_error() {
+        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+
+        let error = PassboltError::from(json_error);
+
+        assert!(error.to_string().starts_with("JSON error: "), "{error}");
+    }
+}
