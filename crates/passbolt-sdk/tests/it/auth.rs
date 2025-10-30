@@ -187,7 +187,6 @@ async fn login_without_mfa_provider_reports_mfa_required() {
 }
 
 #[tokio::test]
-#[ignore = "SEC-3: the post-login key cross-check swallows every error"]
 async fn login_rejects_a_server_holding_another_public_key() {
     let fake = FakePassbolt::new();
     fake.on("GET", "/users/me.json", data::user_with_key("ada", &BETTY));
@@ -201,7 +200,6 @@ async fn login_rejects_a_server_holding_another_public_key() {
 }
 
 #[tokio::test]
-#[ignore = "SEC-6: the decrypted challenge is sent back without checking the GPGAuth token format"]
 async fn login_refuses_to_send_back_a_non_token_challenge() {
     let fake = FakePassbolt::new();
     fake.send_challenge("any plaintext the server wants decrypted");
@@ -216,7 +214,6 @@ async fn login_refuses_to_send_back_a_non_token_challenge() {
 }
 
 #[tokio::test]
-#[ignore = "SEC-7: a session without CSRF token is accepted"]
 async fn login_rejects_a_session_without_csrf_token() {
     let fake = FakePassbolt::new();
     fake.without_csrf_cookie();

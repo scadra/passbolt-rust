@@ -150,3 +150,272 @@ fn test_configure_persists_every_given_setting() {
         assert!(saved.contains(expected), "{expected} missing: {saved}");
     }
 }
+
+fn configure_in(config: &std::path::Path) -> Command {
+    let mut command = passbolt();
+    command
+        .env_remove("PASSBOLT_SERVER_ADDRESS")
+        .env("PASSBOLT_CONFIG", config)
+        .arg("configure");
+    command
+}
+
+fn fixture_key(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../passbolt-sdk/tests/fixtures/keys")
+        .join(name)
+}
+
+#[test]
+fn configure_refuses_to_overwrite_an_invalid_config_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "server_address = [not toml").unwrap();
+
+    configure_in(&config)
+        .args(["--proxy", "http://proxy.test:8080"])
+        .assert()
+        .failure()
+        .stderr(contains(config.to_str().unwrap()));
+
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "server_address = [not toml"
+    );
+}
+
+#[test]
+fn a_command_fails_on_an_invalid_config_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "server_address = [not toml").unwrap();
+
+    passbolt()
+        .args(["--config", config.to_str().unwrap(), "list", "resource"])
+        .assert()
+        .failure()
+        .stderr(contains(config.to_str().unwrap()));
+}
+
+#[cfg(unix)]
+#[test]
+fn configure_restricts_an_existing_config_file_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "server_address = \"https://example.test\"\n").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    configure_in(&config)
+        .args(["--mfa-mode", "none"])
+        .assert()
+        .success();
+
+    let mode = std::fs::metadata(&config).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn configure_saves_the_server_address_from_the_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    configure_in(&config)
+        .env("PASSBOLT_SERVER_ADDRESS", "https://from-env.test")
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        saved.contains("server_address = \"https://from-env.test\""),
+        "{saved}"
+    );
+}
+
+#[test]
+fn configure_saves_the_server_verify_token_from_the_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    configure_in(&config)
+        .env("PASSBOLT_SERVER_VERIFY_TOKEN", "token-from-env")
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        saved.contains("server_verify_token = \"token-from-env\""),
+        "{saved}"
+    );
+}
+
+#[test]
+fn successive_configure_runs_accumulate_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    configure_in(&config)
+        .args(["--server-address", "https://example.test"])
+        .assert()
+        .success();
+    configure_in(&config)
+        .args(["--proxy", "http://proxy.test:8080"])
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(saved.contains("https://example.test"), "{saved}");
+    assert!(saved.contains("http://proxy.test:8080"), "{saved}");
+}
+
+#[test]
+fn configure_fails_on_a_missing_tls_client_certificate_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    let missing = directory.path().join("missing.pem");
+
+    configure_in(&config)
+        .args(["--tls-client-cert-file", missing.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains("Cannot read TLS client cert file"))
+        .stderr(contains(missing.to_str().unwrap()));
+
+    assert!(!config.exists());
+}
+
+#[test]
+fn a_command_fails_on_a_missing_tls_client_certificate_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.pem");
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", directory.path().join("config.toml"))
+        .args([
+            "--server-address",
+            "http://127.0.0.1:1",
+            "--tls-client-cert-file",
+            missing.to_str().unwrap(),
+            "list",
+            "resource",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("Cannot read TLS client cert file"))
+        .stderr(contains(missing.to_str().unwrap()));
+}
+
+#[test]
+fn an_invalid_resolve_fails_before_any_network_access() {
+    let directory = tempfile::tempdir().unwrap();
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", directory.path().join("config.toml"))
+        .args([
+            "--server-address",
+            "http://127.0.0.1:1",
+            "--user-private-key-file",
+            fixture_key("ada_private.asc").to_str().unwrap(),
+            "--resolve",
+            "bad",
+            "verify",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("Invalid --resolve"));
+}
+
+#[test]
+fn the_config_flag_selects_the_file_a_command_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("f.toml");
+    std::fs::write(&config, "server_address = \"http://127.0.0.1:1\"\n").unwrap();
+
+    passbolt()
+        .env_remove("PASSBOLT_SERVER_ADDRESS")
+        .env_remove("PASSBOLT_CONFIG")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "--user-private-key-file",
+            fixture_key("ada_private.asc").to_str().unwrap(),
+            "verify",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("127.0.0.1:1"));
+}
+
+#[test]
+fn gendoc_writes_man_pages() {
+    let directory = tempfile::tempdir().unwrap();
+
+    passbolt()
+        .args([
+            "gendoc",
+            "--doc-type",
+            "man",
+            "--output-dir",
+            directory.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let names: Vec<String> = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"passbolt.1".to_string()), "{names:?}");
+    assert!(names.iter().all(|name| name.ends_with(".1")), "{names:?}");
+}
+
+#[test]
+fn timeout_aborts_a_request_to_a_silent_server() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let connections: Vec<_> = listener.incoming().collect();
+        drop(connections);
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", directory.path().join("config.toml"))
+        .args([
+            "--server-address",
+            &format!("http://{address}"),
+            "--user-private-key-file",
+            fixture_key("ada_private.asc").to_str().unwrap(),
+            "--timeout",
+            "1s",
+            "verify",
+        ])
+        .timeout(std::time::Duration::from_secs(15))
+        .output()
+        .unwrap();
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "still waiting after {elapsed:?}"
+    );
+}
+
+#[test]
+fn an_environment_variable_takes_precedence_over_the_config_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "server_verify_token = \"token-from-file\"\n").unwrap();
+
+    configure_in(&config)
+        .env("PASSBOLT_SERVER_VERIFY_TOKEN", "token-from-env")
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        saved.contains("server_verify_token = \"token-from-env\""),
+        "{saved}"
+    );
+}

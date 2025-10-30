@@ -10,6 +10,7 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
@@ -28,6 +29,9 @@ pub enum Account {
 }
 
 pub const ADMIN: Account = Account::Admin;
+
+/// A valid UUID that matches nothing on the server.
+pub const UNKNOWN_ID: &str = "00000000-0000-4000-8000-000000000000";
 
 pub fn passbolt() -> Command {
     passbolt_as(Account::User)
@@ -147,11 +151,22 @@ pub fn ids(listed: &Value) -> Vec<&str> {
 
 /// Name unique to this run, so tests never collide with existing data.
 pub fn unique_name(prefix: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("e2e-{prefix}-{nanos}")
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("e2e-{prefix}-{nanos}-{}-{sequence}", std::process::id())
+}
+
+/// `args` must fail because the entity does not exist (not because of the network).
+pub fn assert_not_found(account: Account, args: &[&str]) {
+    passbolt_as(account)
+        .args(args)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("404"));
 }
 
 /// Deletes the entity when dropped, so a failing test leaves no data behind.
@@ -185,7 +200,11 @@ impl Drop for Cleanup {
 
 /// Id of the admin account.
 pub fn admin_id() -> String {
-    run_json_as(ADMIN, &["get", "user", "--id", "me"])["id"]
+    current_user_id(ADMIN)
+}
+
+pub fn current_user_id(account: Account) -> String {
+    run_json_as(account, &["get", "user", "--id", "me"])["id"]
         .as_str()
         .unwrap()
         .to_string()

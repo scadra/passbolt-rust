@@ -233,7 +233,7 @@ mod tests {
         let items = vec!["alpha", "beta"];
         let filter = Filter::parse("name=zzz").unwrap();
         let result = filter_entities(items, &[filter], |name| make_fields(name));
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [&str; 0]);
     }
 
     #[test]

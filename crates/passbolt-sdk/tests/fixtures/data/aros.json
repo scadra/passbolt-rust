@@ -1,0 +1,21 @@
+[
+  {
+    "id": "8b6c3a10-0000-4000-8000-000000000be7",
+    "username": "betty@passbolt.test",
+    "role_id": "a58de6d3-f52c-5080-b79b-a601a647ac85",
+    "active": true,
+    "deleted": false,
+    "profile": {
+      "id": "8b6c3a10-0000-4000-8000-000000009998",
+      "user_id": "8b6c3a10-0000-4000-8000-000000000be7",
+      "first_name": "Betty",
+      "last_name": "Test"
+    }
+  },
+  {
+    "id": "9c7d4b20-0000-4000-8000-000000000960",
+    "name": "Ops",
+    "deleted": false,
+    "user_count": 2
+  }
+]

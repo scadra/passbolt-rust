@@ -10,7 +10,9 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use crate::common::{create_folder, create_resource, ids, passbolt, run, run_json, unique_name};
+use crate::common::{
+    assert_not_found, create_folder, create_resource, ids, run, run_json, unique_name, Account,
+};
 
 #[test]
 fn resource_moved_into_a_folder_is_listed_there() {
@@ -111,10 +113,7 @@ fn deleted_folder_is_gone() {
 
     run(&["delete", "folder", "--id", &folder.id]);
 
-    passbolt()
-        .args(["get", "folder", "--id", &folder.id])
-        .assert()
-        .failure();
+    assert_not_found(Account::User, &["get", "folder", "--id", &folder.id]);
 }
 
 #[test]
@@ -129,4 +128,30 @@ fn resource_moved_back_to_the_root_has_no_parent() {
     run(&["move", "resource", "--id", &resource.id]);
 
     assert!(run_json(&["get", "resource", "--id", &resource.id])["folder_parent_id"].is_null());
+}
+
+#[test]
+fn every_resource_of_a_large_folder_is_listed() {
+    const COUNT: usize = 25;
+    let folder = create_folder(&unique_name("large"), &[]);
+    let resources: Vec<_> = (0..COUNT)
+        .map(|index| {
+            create_resource(
+                &unique_name(&format!("item{index}")),
+                "p",
+                &["--folder-parent-id", &folder.id],
+            )
+        })
+        .collect();
+
+    let listed = run_json(&["list", "resource", "--folder", &folder.id]);
+
+    let mut listed_ids = ids(&listed);
+    listed_ids.sort_unstable();
+    listed_ids.dedup();
+    assert_eq!(
+        listed_ids.len(),
+        resources.len(),
+        "missing or duplicated resources"
+    );
 }

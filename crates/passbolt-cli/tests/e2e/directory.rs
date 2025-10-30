@@ -15,8 +15,8 @@
 use serde_json::Value;
 
 use crate::common::{
-    admin_id, create_group, create_resource, ids, passbolt_as, run, run_as, run_json, run_json_as,
-    run_text_as, share_with_user_id, unique_name, Cleanup, ADMIN,
+    admin_id, assert_not_found, create_group, create_resource, ids, run, run_as, run_json,
+    run_json_as, run_text_as, share_with_user_id, unique_name, Cleanup, ADMIN,
 };
 
 fn create_user(first_name: &str) -> (String, Cleanup) {
@@ -113,10 +113,7 @@ fn deleted_user_is_gone() {
 
     run_as(ADMIN, &["delete", "user", "--id", &user.id]);
 
-    passbolt_as(ADMIN)
-        .args(["get", "user", "--id", &user.id])
-        .assert()
-        .failure();
+    assert_not_found(ADMIN, &["get", "user", "--id", &user.id]);
 }
 
 #[test]
@@ -198,10 +195,7 @@ fn deleted_group_is_gone() {
 
     run_as(ADMIN, &["delete", "group", "--id", &group.id]);
 
-    passbolt_as(ADMIN)
-        .args(["get", "group", "--id", &group.id])
-        .assert()
-        .failure();
+    assert_not_found(ADMIN, &["get", "group", "--id", &group.id]);
 }
 
 #[test]

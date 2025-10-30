@@ -13,8 +13,9 @@
 use serde_json::Value;
 
 use crate::common::{
-    admin_id, create_folder, create_group, create_resource, ids, run, run_json, share_with_user_id,
-    unique_name,
+    admin_id, create_folder, create_group, create_resource, current_user_id, ids, passbolt, run,
+    run_as, run_json, run_json_as, share_with_user_id, unique_name, Account, Cleanup, ADMIN,
+    UNKNOWN_ID,
 };
 
 /// Permission type granted to `user_id`, if any.
@@ -174,4 +175,93 @@ fn resource_shared_with_a_group_is_listed_by_group() {
     let listed = run_json(&["list", "resource", "--group", &group.id]);
 
     assert_eq!(ids(&listed), [resource.id.as_str()]);
+}
+
+#[test]
+fn recipient_decrypts_the_shared_password() {
+    let resource = create_resource(&unique_name("shared"), "shared-password", &[]);
+
+    run(&[
+        "share",
+        "resource",
+        "--id",
+        &resource.id,
+        "--type",
+        "1",
+        "--user",
+        &admin_id(),
+    ]);
+
+    let as_recipient = run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
+    assert_eq!(as_recipient["password"], "shared-password");
+}
+
+#[test]
+fn read_only_recipient_cannot_modify_or_delete() {
+    let created = run_json_as(
+        ADMIN,
+        &[
+            "create",
+            "resource",
+            "--name",
+            &unique_name("read-only"),
+            "--password",
+            "original",
+        ],
+    );
+    let resource = Cleanup::by(ADMIN, "resource", &created);
+    let reader = current_user_id(Account::User);
+    run_as(
+        ADMIN,
+        &[
+            "share",
+            "resource",
+            "--id",
+            &resource.id,
+            "--type",
+            "1",
+            "--user",
+            &reader,
+        ],
+    );
+
+    passbolt()
+        .args([
+            "update",
+            "resource",
+            "--id",
+            &resource.id,
+            "--password",
+            "changed",
+        ])
+        .assert()
+        .failure();
+    passbolt()
+        .args(["delete", "resource", "--id", &resource.id])
+        .assert()
+        .failure();
+
+    assert_eq!(
+        run_json_as(ADMIN, &["get", "resource", "--id", &resource.id])["password"],
+        "original"
+    );
+}
+
+#[test]
+fn sharing_with_an_unknown_user_fails() {
+    let resource = create_resource(&unique_name("shared"), "p", &[]);
+
+    passbolt()
+        .args([
+            "share",
+            "resource",
+            "--id",
+            &resource.id,
+            "--type",
+            "1",
+            "--user",
+            UNKNOWN_ID,
+        ])
+        .assert()
+        .failure();
 }

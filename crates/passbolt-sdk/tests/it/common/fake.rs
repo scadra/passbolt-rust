@@ -14,7 +14,7 @@
 //!
 //! Login, MFA and envelopes follow `passbolt_api` (`AuthLoginController`,
 //! `GpgAuthenticator`, `MfaRequiredCheckMiddleware`); other endpoints answer
-//! canned_response bodies registered by the test.
+//! canned bodies registered by the test.
 
 #![allow(clippy::unused_async_trait_impl)] // synchronous fake behind an async trait
 
@@ -49,18 +49,42 @@ impl RecordedRequest {
     pub const fn json_body(&self) -> &Value {
         self.body.as_ref().unwrap()
     }
+
+    /// Decoded values of the query parameter `name`, in order.
+    pub fn query_values(&self, name: &str) -> Vec<String> {
+        url::form_urlencoded::parse(self.query.as_bytes())
+            .filter(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+            .collect()
+    }
+
+    pub fn query_value(&self, name: &str) -> Option<String> {
+        self.query_values(name).into_iter().next()
+    }
 }
 
 struct Route {
     method: &'static str,
     path: String,
     status: u16,
+    message: String,
     body: Value,
 }
 
+/// `GET path` answered page by page, with `header.pagination`.
+struct PagedList {
+    path: String,
+    count: usize,
+    limit: usize,
+    pages: Vec<Value>,
+    failing_pages: Vec<(usize, u16)>,
+}
+
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)] // independent switches of the fake server
 struct State {
     routes: Vec<Route>,
+    paged_lists: Vec<PagedList>,
     requests: Vec<RecordedRequest>,
     login_token: Option<String>,
     challenge: Option<String>,
@@ -69,6 +93,10 @@ struct State {
     no_csrf_cookie: bool,
     csrf_cookie_sent: bool,
     rotated_csrf_token: Option<String>,
+    /// Last `csrfToken` cookie set, as a cookie jar keeps it.
+    csrf_cookie: Option<String>,
+    no_auth_token_header: bool,
+    login_verification_error: Option<(u16, String)>,
 }
 
 /// Clones share their state: keep one to inspect what the SDK sent.
@@ -102,14 +130,19 @@ impl FakePassbolt {
     /// Answer `method path` with `body` in a success envelope. Query strings are
     /// ignored; the last registration wins.
     pub fn on(&self, method: &'static str, path: &str, body: Value) {
-        self.route(method, path, 200, body);
+        self.route(method, path, 200, "", body);
     }
 
     pub fn on_error(&self, method: &'static str, path: &str, status: u16) {
-        self.route(method, path, status, Value::Null);
+        self.on_error_saying(method, path, status, "");
     }
 
-    fn route(&self, method: &'static str, path: &str, status: u16, body: Value) {
+    /// Error envelope whose `header.message` is `message`.
+    pub fn on_error_saying(&self, method: &'static str, path: &str, status: u16, message: &str) {
+        self.route(method, path, status, message, Value::Null);
+    }
+
+    fn route(&self, method: &'static str, path: &str, status: u16, message: &str, body: Value) {
         let mut state = self.state.lock().unwrap();
         state
             .routes
@@ -118,8 +151,48 @@ impl FakePassbolt {
             method,
             path: path.to_string(),
             status,
+            message: message.to_string(),
             body,
         });
+    }
+
+    /// Answer `GET path?page=N` with `pages[N - 1]` (an empty list past the end) and
+    /// `header.pagination` announcing `count` items, `limit` per page.
+    pub fn on_pages(&self, path: &str, count: usize, limit: usize, pages: Vec<Value>) {
+        let mut state = self.state.lock().unwrap();
+        state
+            .paged_lists
+            .retain(|paged_list| paged_list.path != path);
+        state.paged_lists.push(PagedList {
+            path: path.to_string(),
+            count,
+            limit,
+            pages,
+            failing_pages: Vec::new(),
+        });
+    }
+
+    /// Answer `page` of the list registered with `on_pages` with an error `status`.
+    pub fn fail_page(&self, path: &str, page: usize, status: u16) {
+        self.state
+            .lock()
+            .unwrap()
+            .paged_lists
+            .iter_mut()
+            .find(|paged_list| paged_list.path == path)
+            .unwrap_or_else(|| panic!("no pages registered for {path}"))
+            .failing_pages
+            .push((page, status));
+    }
+
+    /// Stage 1 of the login without the `X-GPGAuth-User-Auth-Token` header.
+    pub fn without_auth_token_header(&self) {
+        self.state.lock().unwrap().no_auth_token_header = true;
+    }
+
+    /// Answer stage 2 of the login (the decrypted token) with `status` and `message`.
+    pub fn fail_login_verification(&self, status: u16, message: &str) {
+        self.state.lock().unwrap().login_verification_error = Some((status, message.to_string()));
     }
 
     /// TOTP required after login, as `MfaRequiredCheckMiddleware` enforces it.
@@ -149,6 +222,11 @@ impl FakePassbolt {
             .filter(|request| request.method == method && request.path == path)
             .cloned()
             .collect()
+    }
+
+    /// Number of requests received so far, whatever their route.
+    pub fn request_count(&self) -> usize {
+        self.state.lock().unwrap().requests.len()
     }
 
     /// Body of the single `method path` request.
@@ -199,7 +277,9 @@ impl FakePassbolt {
                 )
             }
             _ => {
-                let mut response = self.canned_response(method, path);
+                let mut response = self
+                    .paged_response(method, path, query)
+                    .unwrap_or_else(|| self.canned_response(method, path));
                 if method == "GET" {
                     self.set_csrf_cookie(&mut response);
                 }
@@ -215,12 +295,14 @@ impl FakePassbolt {
             response
                 .headers
                 .push(("set-cookie-name".into(), format!("csrfToken={token}")));
+            state.csrf_cookie = Some(token);
         } else if !state.no_csrf_cookie && !state.csrf_cookie_sent {
             state.csrf_cookie_sent = true;
             // What NativeHttpClient exposes for the `csrfToken` cookie.
             response
                 .headers
                 .push(("set-cookie-name".into(), format!("csrfToken={CSRF_TOKEN}")));
+            state.csrf_cookie = Some(CSRF_TOKEN.to_string());
         }
     }
 
@@ -244,8 +326,46 @@ impl FakePassbolt {
                         &Value::Null,
                     )
                 },
-                |route| json_response(route.status, "", path, &route.body),
+                |route| json_response(route.status, &route.message, path, &route.body),
             )
+    }
+
+    fn paged_response(&self, method: &str, path: &str, query: &str) -> Option<HttpResponse> {
+        if method != "GET" {
+            return None;
+        }
+        let page: usize = url::form_urlencoded::parse(query.as_bytes())
+            .find(|(key, _)| key == "page")
+            .map_or(1, |(_, value)| value.parse().unwrap());
+        let (count, limit, failing_status, items) = {
+            let state = self.state.lock().unwrap();
+            let paged_list = state
+                .paged_lists
+                .iter()
+                .find(|paged_list| paged_list.path == path)?;
+            let failing_status = paged_list
+                .failing_pages
+                .iter()
+                .find(|(failing_page, _)| *failing_page == page)
+                .map(|(_, status)| *status);
+            let items = paged_list.pages.get(page - 1).cloned();
+            let answer = (paged_list.count, paged_list.limit, failing_status, items);
+            drop(state);
+            answer
+        };
+        if let Some(status) = failing_status {
+            return Some(json_response(
+                status,
+                "fake: page refused",
+                path,
+                &Value::Null,
+            ));
+        }
+        let mut response = json_response(200, "", path, &items.unwrap_or_else(|| json!([])));
+        let mut envelope: Value = serde_json::from_slice(&response.body).unwrap();
+        envelope["header"]["pagination"] = json!({ "count": count, "page": page, "limit": limit });
+        response.body = serde_json::to_vec(&envelope).unwrap();
+        Some(response)
     }
 
     fn gpgauth_login(&self, body: &Value) -> HttpResponse {
@@ -265,11 +385,11 @@ impl FakePassbolt {
             .and_then(Value::as_str)
         else {
             let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-            let challenge = {
+            let (challenge, send_token_header) = {
                 let mut state = self.state.lock().unwrap();
                 let challenge = ADA.encrypt(state.challenge.as_deref().unwrap_or(&token));
                 state.login_token = Some(token);
-                challenge
+                (challenge, !state.no_auth_token_header)
             };
             // Stage 1 is a partial success: error envelope with status 200.
             let mut response = envelope(
@@ -282,16 +402,27 @@ impl FakePassbolt {
             response
                 .headers
                 .push(("X-GPGAuth-Progress".into(), "stage1".into()));
-            response.headers.push((
-                "X-GPGAuth-User-Auth-Token".into(),
-                php_quotemeta_urlencode(&challenge),
-            ));
+            if send_token_header {
+                response.headers.push((
+                    "X-GPGAuth-User-Auth-Token".into(),
+                    php_quotemeta_urlencode(&challenge),
+                ));
+            }
             return response;
         };
 
-        let expected_token = self.state.lock().unwrap().login_token.clone();
+        let (expected_token, verification_error) = {
+            let state = self.state.lock().unwrap();
+            (
+                state.login_token.clone(),
+                state.login_verification_error.clone(),
+            )
+        };
         if expected_token.as_deref() != Some(user_token_result) {
             return json_response(400, "The authentication failed.", URL, &Value::Null);
+        }
+        if let Some((status, message)) = verification_error {
+            return json_response(status, &message, URL, &Value::Null);
         }
         let mut response = json_response(
             200,
@@ -355,6 +486,11 @@ fn envelope(code: u16, status: &str, message: &str, url: &str, body: &Value) -> 
 }
 
 impl HttpClient for FakePassbolt {
+    fn cookie(&self, _url: &str, name: &str) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        state.csrf_cookie.clone().filter(|_| name == "csrfToken")
+    }
+
     async fn get(
         &self,
         url: &str,
