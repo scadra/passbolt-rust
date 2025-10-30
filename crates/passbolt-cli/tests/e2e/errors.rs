@@ -14,17 +14,18 @@
 
 use predicates::str::contains;
 
-use crate::common::{passbolt, run_json_as, unique_name, Cleanup, ADMIN};
-
-const UNKNOWN_ID: &str = "00000000-0000-4000-8000-000000000000";
+use crate::common::{
+    assert_not_found, passbolt, run_json_as, unique_name, Account, Cleanup, ADMIN, UNKNOWN_ID,
+};
 
 #[test]
 fn unknown_resource_is_reported() {
-    passbolt()
-        .args(["get", "resource", "--id", UNKNOWN_ID])
-        .assert()
-        .failure()
-        .stderr(contains("404"));
+    assert_not_found(Account::User, &["get", "resource", "--id", UNKNOWN_ID]);
+}
+
+#[test]
+fn unknown_folder_is_reported() {
+    assert_not_found(Account::User, &["get", "folder", "--id", UNKNOWN_ID]);
 }
 
 #[test]

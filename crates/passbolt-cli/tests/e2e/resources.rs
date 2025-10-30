@@ -10,9 +10,12 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
-use crate::common::{create_resource, ids, passbolt, run, run_json, run_text, unique_name};
+use crate::common::{
+    assert_not_found, create_resource, ids, run, run_json, run_text, unique_name, Account,
+};
 
 fn get(id: &str) -> Value {
     run_json(&["get", "resource", "--id", id])
@@ -105,7 +108,16 @@ fn updated_description_reads_back() {
 #[test]
 fn expiry_is_set_then_cleared() {
     let resource = create_resource(&unique_name("resource"), "p", &["--expiry", "7d"]);
-    assert!(get(&resource.id)["expired"].is_string(), "expiry not set");
+    let expires_at: DateTime<Utc> = get(&resource.id)["expired"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let in_seven_days = Utc::now() + Duration::days(7);
+    assert!(
+        (expires_at - in_seven_days).num_minutes().abs() < 60,
+        "{expires_at}"
+    );
 
     run(&[
         "update",
@@ -169,10 +181,7 @@ fn deleted_resource_is_gone() {
 
     run(&["delete", "resource", "--id", &resource.id]);
 
-    passbolt()
-        .args(["get", "resource", "--id", &resource.id])
-        .assert()
-        .failure();
+    assert_not_found(Account::User, &["get", "resource", "--id", &resource.id]);
 }
 
 #[test]

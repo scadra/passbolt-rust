@@ -10,15 +10,31 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
+use totp_rs::{Algorithm, Secret, TOTP};
+
 use crate::common::{create_resource, passbolt, run, run_json, unique_name, Cleanup};
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
 
-fn assert_totp_code(code: &serde_json::Value, digits: usize) {
+/// The code must be the one the shared secret yields now (or in an adjacent window).
+fn assert_totp_code(code: &Value, algorithm: Algorithm, digits: usize, period: u64) {
+    let secret = Secret::Encoded(TOTP_KEY.to_string()).to_bytes().unwrap();
+    let generator = TOTP::new_unchecked(algorithm, digits, 0, period, secret);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let expected: Vec<String> = [now - period, now, now + period]
+        .into_iter()
+        .map(|time| generator.generate(time))
+        .collect();
     let code = code["code"].as_str().unwrap();
     assert!(
-        code.len() == digits && code.chars().all(|c| c.is_ascii_digit()),
-        "{code}"
+        expected.iter().any(|candidate| candidate == code),
+        "{code} not in {expected:?}"
     );
 }
 
@@ -26,7 +42,12 @@ fn assert_totp_code(code: &serde_json::Value, digits: usize) {
 fn password_with_totp_generates_a_code() {
     let resource = create_resource(&unique_name("totp"), "p", &["--totp-key", TOTP_KEY]);
 
-    assert_totp_code(&run_json(&["get", "totp", "--id", &resource.id]), 6);
+    assert_totp_code(
+        &run_json(&["get", "totp", "--id", &resource.id]),
+        Algorithm::SHA1,
+        6,
+        30,
+    );
 }
 
 #[test]
@@ -48,8 +69,7 @@ fn totp_settings_are_kept() {
 
     let code = run_json(&["get", "totp", "--id", &resource.id]);
 
-    assert_totp_code(&code, 8);
-    assert!(code["ttl"].as_u64().unwrap() <= 60);
+    assert_totp_code(&code, Algorithm::SHA256, 8, 60);
 }
 
 #[test]
@@ -80,7 +100,12 @@ fn totp_only_resource_generates_a_code() {
     ]);
     let resource = Cleanup::new("resource", &created);
 
-    assert_totp_code(&run_json(&["get", "totp", "--id", &resource.id]), 6);
+    assert_totp_code(
+        &run_json(&["get", "totp", "--id", &resource.id]),
+        Algorithm::SHA1,
+        6,
+        30,
+    );
 }
 
 #[test]
@@ -96,5 +121,10 @@ fn changing_the_digits_keeps_the_totp_key() {
         "8",
     ]);
 
-    assert_totp_code(&run_json(&["get", "totp", "--id", &resource.id]), 8);
+    assert_totp_code(
+        &run_json(&["get", "totp", "--id", &resource.id]),
+        Algorithm::SHA1,
+        8,
+        30,
+    );
 }
