@@ -90,6 +90,7 @@ struct State {
     challenge: Option<String>,
     mfa_code: Option<String>,
     mfa_verified: bool,
+    mfa_verification_ignored: bool,
     no_csrf_cookie: bool,
     csrf_cookie_sent: bool,
     rotated_csrf_token: Option<String>,
@@ -196,6 +197,16 @@ impl FakePassbolt {
     }
 
     /// TOTP required after login, as `MfaRequiredCheckMiddleware` enforces it.
+    /// The `passbolt_mfa` cookie expires: the next request is challenged again.
+    pub fn expire_mfa(&self) {
+        self.state.lock().unwrap().mfa_verified = false;
+    }
+
+    /// Accept TOTP codes but keep challenging, as a misbehaving server would.
+    pub fn ignore_mfa_verification(&self) {
+        self.state.lock().unwrap().mfa_verification_ignored = true;
+    }
+
     pub fn require_mfa(&self, code: &str) {
         self.state.lock().unwrap().mfa_code = Some(code.to_string());
     }
@@ -443,7 +454,7 @@ impl FakePassbolt {
             if body["totp"].as_str() != state.mfa_code.as_deref() {
                 return json_response(400, "The OTP is not valid.", URL, &Value::Null);
             }
-            state.mfa_verified = true;
+            state.mfa_verified = !state.mfa_verification_ignored;
         }
         let mut response = json_response(
             200,

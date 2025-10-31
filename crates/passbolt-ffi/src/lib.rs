@@ -171,9 +171,7 @@ impl PassboltClient {
             let client = Client::login(
                 http,
                 &config,
-                mfa_provider
-                    .as_ref()
-                    .map(|provider| provider as &dyn MfaProvider),
+                mfa_provider.map(|provider| Box::new(provider) as Box<dyn MfaProvider>),
                 config.mfa_retrys,
             )
             .await

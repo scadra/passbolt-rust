@@ -17,7 +17,6 @@ use zeroize::Zeroize;
 use crate::crypto::{decrypt_message, PrivateKey};
 use crate::error::{AuthError, CryptoError, PassboltError};
 use crate::http::HttpClient;
-use crate::mfa::MfaProvider;
 
 /// Result of a successful login — CSRF token and user ID.
 pub struct AuthTokens {
@@ -49,8 +48,6 @@ pub async fn login<H: HttpClient>(
     base_url: &str,
     private_key: &PrivateKey,
     passphrase: &str,
-    mfa_provider: Option<&dyn MfaProvider>,
-    max_attempts: u32,
 ) -> Result<AuthTokens, PassboltError> {
     let url = format!("{base_url}/auth/login.json");
 
@@ -110,27 +107,6 @@ pub async fn login<H: HttpClient>(
 
     let verify_response = http.post(&url, &[], &verify_bytes).await?;
 
-    // Handle MFA challenge (403)
-    if verify_response.status == 403 {
-        let mfa_body: Value = serde_json::from_slice(&verify_response.body).unwrap_or(Value::Null);
-        let is_mfa = mfa_body
-            .pointer("/header/message")
-            .and_then(|value| value.as_str())
-            .is_none_or(|message| message.to_lowercase().contains("mfa"));
-
-        if is_mfa {
-            if let Some(provider) = mfa_provider {
-                return handle_mfa_login(http, base_url, provider, max_attempts).await;
-            }
-            return Err(AuthError::MfaRequired.into());
-        }
-        let message = mfa_body
-            .pointer("/header/message")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Forbidden");
-        return Err(AuthError::LoginFailed(format!("Login failed (403): {message}")).into());
-    }
-
     if verify_response.status >= 400 {
         let error_body: Value =
             serde_json::from_slice(&verify_response.body).unwrap_or(Value::Null);
@@ -174,45 +150,6 @@ fn decode_auth_token_header(encoded: &str) -> Result<String, AuthError> {
         .map_err(|error| {
             AuthError::LoginFailed(format!("Invalid X-GPGAuth-User-Auth-Token header: {error}"))
         })
-}
-
-/// Handle MFA by using the provided `MfaProvider` to obtain TOTP codes.
-async fn handle_mfa_login<H: HttpClient>(
-    http: &H,
-    base_url: &str,
-    provider: &dyn MfaProvider,
-    max_attempts: u32,
-) -> Result<AuthTokens, PassboltError> {
-    let mfa_url = format!("{base_url}/mfa/verify/totp.json");
-
-    for attempt in 0..max_attempts {
-        let code = provider.get_totp_code()?;
-
-        let body =
-            serde_json::to_vec(&serde_json::json!({ "totp": code, "remember_device": false }))?;
-
-        let response = http.post(&mfa_url, &[], &body).await?;
-
-        if response.status < 400 {
-            return extract_auth_tokens(&response);
-        }
-
-        let response_body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-        let message = response_body
-            .pointer("/header/message")
-            .and_then(|value| value.as_str())
-            .unwrap_or("MFA failed");
-
-        if attempt + 1 >= max_attempts {
-            return Err(AuthError::MfaFailed {
-                attempts: max_attempts,
-                message: message.to_string(),
-            }
-            .into());
-        }
-    }
-
-    unreachable!()
 }
 
 /// The `csrfToken` cookie, which the server only sets on a GET without it.

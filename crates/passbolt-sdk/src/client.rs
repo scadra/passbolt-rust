@@ -40,21 +40,48 @@ pub struct PassboltSdk<H: HttpClient> {
     pub user_id: String,
     /// Cached v5 metadata private key (fetched at most once per session).
     metadata_private_key: OnceLock<Option<SignedSecretKey>>,
+    /// Answers the MFA challenge the server sends on any request after login.
+    mfa_provider: Option<Box<dyn MfaProvider>>,
+    mfa_attempts: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Method {
+    Get,
+    Post,
+    Put,
+    Delete,
+}
+
+/// `MfaRequiredCheckMiddleware` redirects to `/mfa/verify/error.json`, which answers 403.
+fn is_mfa_challenge(response: &HttpResponse) -> bool {
+    response.status == 403
+        && serde_json::from_slice::<Value>(&response.body).is_ok_and(|body| {
+            body.pointer("/header/url")
+                .and_then(Value::as_str)
+                .is_some_and(|url| url.ends_with("/mfa/verify/error.json"))
+        })
+}
+
+fn server_message(response: &HttpResponse) -> String {
+    serde_json::from_slice::<Value>(&response.body)
+        .ok()
+        .and_then(|body| body.pointer("/header/message")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("HTTP {}", response.status))
 }
 
 /// Fetch the org-wide metadata private key from the API.
-///
-/// Free function (not a method) so it can be called from an `OnceCell` init
-/// closure without conflicting with the borrow of `self.metadata_private_key`.
 async fn fetch_metadata_key<H: HttpClient>(
-    http: &H,
-    base_url: &str,
+    client: &PassboltSdk<H>,
     user_id: &str,
     private_key: &pgp::SignedSecretKey,
     passphrase: &str,
 ) -> Result<Option<pgp::SignedSecretKey>, PassboltError> {
-    let url = format!("{base_url}/metadata/keys.json?contain[metadata_private_keys]=1");
-    let response = http.get(&url, &[]).await?;
+    let url = format!(
+        "{}/metadata/keys.json?contain[metadata_private_keys]=1",
+        client.base_url
+    );
+    let response = client.http_get(&url).await?;
 
     let body: Value = serde_json::from_slice(&response.body)?;
 
@@ -135,7 +162,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     pub async fn login(
         http: H,
         sdk_config: &SdkConfig,
-        mfa_provider: Option<&dyn MfaProvider>,
+        mfa_provider: Option<Box<dyn MfaProvider>>,
         max_attempts: u32,
     ) -> Result<Self, PassboltError> {
         if sdk_config.server_url.is_empty() {
@@ -164,15 +191,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             .await?;
         }
 
-        let mut tokens: AuthTokens = auth::login(
-            &http,
-            &base_url,
-            &private_key,
-            passphrase.expose_secret(),
-            mfa_provider,
-            max_attempts,
-        )
-        .await?;
+        let mut tokens: AuthTokens =
+            auth::login(&http, &base_url, &private_key, passphrase.expose_secret()).await?;
 
         let mut client = Self {
             http,
@@ -182,6 +202,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             passphrase,
             user_id: std::mem::take(&mut tokens.user_id),
             metadata_private_key: OnceLock::new(),
+            mfa_provider,
+            mfa_attempts: max_attempts.max(1),
         };
 
         // Login is exempt from CSRF: the token cookie comes with this first GET.
@@ -265,9 +287,80 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     async fn http_get(&self, url: &str) -> Result<HttpResponse, PassboltError> {
-        let response = self.http.get(url, &[]).await?;
+        self.send(Method::Get, url, None).await
+    }
+
+    /// Send a request. When the server asks for MFA (on the first request after login,
+    /// or once the MFA cookie expires), answer it and replay the request once.
+    async fn send(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&[u8]>,
+    ) -> Result<HttpResponse, PassboltError> {
+        let response = self.send_once(method, url, body).await?;
+        if !is_mfa_challenge(&response) {
+            return Ok(response);
+        }
+        self.verify_mfa().await?;
+        let response = self.send_once(method, url, body).await?;
+        if is_mfa_challenge(&response) {
+            return Err(AuthError::MfaFailed {
+                attempts: self.mfa_attempts,
+                message: "MFA was requested again right after a successful verification".into(),
+            }
+            .into());
+        }
+        Ok(response)
+    }
+
+    async fn send_once(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&[u8]>,
+    ) -> Result<HttpResponse, PassboltError> {
+        let csrf_token = self.csrf_token();
+        let headers = [("X-CSRF-Token", csrf_token.as_str())];
+        let response = match (method, body) {
+            (Method::Get, _) => self.http.get(url, &[]).await?,
+            (Method::Post, body) => {
+                self.http
+                    .post(url, &headers, body.unwrap_or_default())
+                    .await?
+            }
+            (Method::Put, body) => {
+                self.http
+                    .put(url, &headers, body.unwrap_or_default())
+                    .await?
+            }
+            (Method::Delete, None) => self.http.delete(url, &headers).await?,
+            (Method::Delete, Some(body)) => self.http.delete_with_body(url, &headers, body).await?,
+        };
         self.remember_csrf_cookie(&response);
         Ok(response)
+    }
+
+    /// Answer the TOTP challenge; the server sets the `passbolt_mfa` cookie on success.
+    async fn verify_mfa(&self) -> Result<(), PassboltError> {
+        let provider = self.mfa_provider.as_deref().ok_or(AuthError::MfaRequired)?;
+        let url = format!("{}/mfa/verify/totp.json", self.base_url);
+        let mut last_error = String::new();
+        for _ in 0..self.mfa_attempts {
+            let body = serde_json::to_vec(
+                &serde_json::json!({ "totp": provider.get_totp_code()?, "remember": false }),
+            )?;
+            let response = self.send_once(Method::Post, &url, Some(&body)).await?;
+            if response.status < 400 {
+                return Ok(());
+            }
+            last_error = server_message(&response);
+        }
+        Err(AuthError::MfaFailed {
+            attempts: self.mfa_attempts,
+            message: last_error,
+        }
+        .into())
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
@@ -320,13 +413,8 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let csrf_token = self.csrf_token();
         let json_body = serde_json::to_vec(body)?;
-        let response = self
-            .http
-            .post(&url, &[("X-CSRF-Token", csrf_token.as_str())], &json_body)
-            .await?;
-        self.remember_csrf_cookie(&response);
+        let response = self.send(Method::Post, &url, Some(&json_body)).await?;
         self.parse_response(&response)
     }
 
@@ -336,24 +424,14 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let csrf_token = self.csrf_token();
         let json_body = serde_json::to_vec(body)?;
-        let response = self
-            .http
-            .put(&url, &[("X-CSRF-Token", csrf_token.as_str())], &json_body)
-            .await?;
-        self.remember_csrf_cookie(&response);
+        let response = self.send(Method::Put, &url, Some(&json_body)).await?;
         self.parse_response(&response)
     }
 
     async fn delete_request(&self, path: &str) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let csrf_token = self.csrf_token();
-        let response = self
-            .http
-            .delete(&url, &[("X-CSRF-Token", csrf_token.as_str())])
-            .await?;
-        self.remember_csrf_cookie(&response);
+        let response = self.send(Method::Delete, &url, None).await?;
 
         if response.status >= 400 {
             let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
@@ -377,13 +455,8 @@ impl<H: HttpClient> PassboltSdk<H> {
         body: &Value,
     ) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
-        let csrf_token = self.csrf_token();
         let json_body = serde_json::to_vec(body)?;
-        let response = self
-            .http
-            .delete_with_body(&url, &[("X-CSRF-Token", csrf_token.as_str())], &json_body)
-            .await?;
-        self.remember_csrf_cookie(&response);
+        let response = self.send(Method::Delete, &url, Some(&json_body)).await?;
 
         if response.status >= 400 {
             let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
@@ -537,8 +610,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         }
 
         let result = fetch_metadata_key(
-            &self.http,
-            &self.base_url,
+            self,
             &self.user_id,
             &self.private_key.key,
             self.passphrase.expose_secret(),
