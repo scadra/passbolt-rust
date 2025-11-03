@@ -10,7 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use passbolt_sdk::error::PassboltError;
 use passbolt_sdk::MfaProvider;
@@ -27,12 +28,28 @@ impl MfaProvider for TerminalMfaProvider {
 
 /// Non-interactive MFA: generates TOTP from a base32 secret.
 pub struct AutoTotpProvider {
-    pub secret: String,
-    pub offset_secs: i64,
+    secret: String,
+    offset_secs: i64,
+    retry_delay: Duration,
+    asked: AtomicBool,
+}
+
+impl AutoTotpProvider {
+    pub const fn new(secret: String, offset_secs: i64, retry_delay: Duration) -> Self {
+        Self {
+            secret,
+            offset_secs,
+            retry_delay,
+            asked: AtomicBool::new(false),
+        }
+    }
 }
 
 impl MfaProvider for AutoTotpProvider {
     fn get_totp_code(&self) -> Result<String, PassboltError> {
+        if self.asked.swap(true, Ordering::Relaxed) {
+            std::thread::sleep(self.retry_delay);
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| PassboltError::Other(format!("System clock error: {error}")))?
@@ -51,8 +68,8 @@ fn generate_totp(secret: &str, offset_secs: i64, now: u64) -> Result<String, Pas
             PassboltError::Other(format!("Invalid TOTP secret (must be base32): {error}"))
         })?;
 
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
-        .map_err(|error| PassboltError::Other(format!("Failed to create TOTP: {error}")))?;
+    // Unchecked: 80-bit secrets (Google Authenticator's default) are below the RFC's 128-bit advice.
+    let totp = TOTP::new_unchecked(Algorithm::SHA1, 6, 1, 30, secret_bytes);
 
     let adjusted = now.saturating_add_signed(offset_secs);
     Ok(totp.generate(adjusted))
@@ -90,6 +107,18 @@ mod tests {
             generate_totp(RFC_6238_SECRET, -(1_111_111_109 - 59), 1_111_111_109).unwrap(),
             "287082"
         );
+    }
+
+    #[test]
+    fn test_auto_totp_provider_waits_only_before_a_retry() {
+        let retry_delay = Duration::from_millis(200);
+        let provider = AutoTotpProvider::new(RFC_6238_SECRET.into(), 0, retry_delay);
+
+        let started = std::time::Instant::now();
+        provider.get_totp_code().unwrap();
+        assert!(started.elapsed() < retry_delay);
+        provider.get_totp_code().unwrap();
+        assert!(started.elapsed() >= retry_delay);
     }
 
     #[test]

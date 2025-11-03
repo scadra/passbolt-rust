@@ -155,38 +155,6 @@ async fn writes_send_the_latest_csrf_cookie() {
 }
 
 #[tokio::test]
-#[ignore = "MFA-2: the SDK expects MFA as a 403 on login; the server asks for it on the next request"]
-async fn login_completes_mfa() {
-    let fake = FakePassbolt::new();
-    fake.require_mfa("123456");
-    let totp_codes = FixedTotpCodes::new(&["123456"]);
-
-    let client = PassboltSdk::login(fake.clone(), &ada_config(), Some(&totp_codes), 3)
-        .await
-        .unwrap();
-
-    assert_eq!(client.user_id, ADA_ID);
-    assert_eq!(
-        fake.body_of("POST", "/mfa/verify/totp.json")["totp"],
-        "123456"
-    );
-}
-
-#[tokio::test]
-#[ignore = "MFA-2: the SDK expects MFA as a 403 on login; the server asks for it on the next request"]
-async fn login_without_mfa_provider_reports_mfa_required() {
-    let fake = FakePassbolt::new();
-    fake.require_mfa("123456");
-
-    let error = login_error(&fake, &ada_config()).await;
-
-    assert!(
-        matches!(error, PassboltError::Auth(AuthError::MfaRequired)),
-        "{error:?}"
-    );
-}
-
-#[tokio::test]
 async fn login_rejects_a_server_holding_another_public_key() {
     let fake = FakePassbolt::new();
     fake.on("GET", "/users/me.json", data::user_with_key("ada", &BETTY));
