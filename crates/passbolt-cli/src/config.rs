@@ -230,6 +230,11 @@ impl Config {
         })
     }
 
+    /// Wait between two generated TOTP codes: the same window would give the same code.
+    pub fn mfa_retry_delay(&self) -> Result<std::time::Duration> {
+        parse_duration(&self.mfa_delay)
+    }
+
     /// HTTP transport settings (TLS, mTLS, proxy, name pinning).
     pub fn http_config(&self) -> Result<passbolt_sdk::NativeHttpConfig> {
         let non_empty = |value: &str| (!value.is_empty()).then(|| value.to_string());
