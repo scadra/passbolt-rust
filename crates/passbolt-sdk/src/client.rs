@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use pgp::types::SecretKeyTrait;
-use pgp::SignedSecretKey;
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use std::sync::{OnceLock, RwLock};
@@ -26,6 +25,7 @@ use crate::config::SdkConfig;
 use crate::crypto::{self, PrivateKey};
 use crate::error::{ApiError, AuthError, CryptoError, PassboltError};
 use crate::http::{HttpClient, HttpResponse};
+use crate::metadata::{self, MetadataKeys};
 use crate::mfa::MfaProvider;
 #[allow(clippy::wildcard_imports)] // too many types to enumerate explicitly
 use crate::types::*;
@@ -38,8 +38,8 @@ pub struct PassboltSdk<H: HttpClient> {
     pub(crate) private_key: PrivateKey,
     pub(crate) passphrase: SecretString,
     pub user_id: String,
-    /// Cached v5 metadata private key (fetched at most once per session).
-    metadata_private_key: OnceLock<Option<SignedSecretKey>>,
+    /// Shared v5 metadata keys, fetched and decrypted at most once per session.
+    metadata_keys: OnceLock<Arc<MetadataKeys>>,
     /// Answers the MFA challenge the server sends on any request after login.
     mfa_provider: Option<Box<dyn MfaProvider>>,
     mfa_attempts: u32,
@@ -63,63 +63,24 @@ fn is_mfa_challenge(response: &HttpResponse) -> bool {
         })
 }
 
+/// A JSON object secret, or the plain password of a `password-string` type.
+fn parse_secret(plaintext: Vec<u8>) -> Result<SecretData, PassboltError> {
+    let text = String::from_utf8(plaintext)
+        .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))?;
+    Ok(
+        serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| SecretData {
+            password: Some(text.clone()),
+            raw: Some(text),
+            ..Default::default()
+        }),
+    )
+}
+
 fn server_message(response: &HttpResponse) -> String {
     serde_json::from_slice::<Value>(&response.body)
         .ok()
         .and_then(|body| body.pointer("/header/message")?.as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("HTTP {}", response.status))
-}
-
-/// Fetch the org-wide metadata private key from the API.
-async fn fetch_metadata_key<H: HttpClient>(
-    client: &PassboltSdk<H>,
-    user_id: &str,
-    private_key: &pgp::SignedSecretKey,
-    passphrase: &str,
-) -> Result<Option<pgp::SignedSecretKey>, PassboltError> {
-    let url = format!(
-        "{}/metadata/keys.json?contain[metadata_private_keys]=1",
-        client.base_url
-    );
-    let response = client.http_get(&url).await?;
-
-    let body: Value = serde_json::from_slice(&response.body)?;
-
-    if response.status >= 400 {
-        let message = body
-            .pointer("/header/message")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Unknown error");
-        return Err(ApiError {
-            status: response.status,
-            message: message.to_string(),
-            validation_errors: None,
-        }
-        .into());
-    }
-
-    let data = body.get("body").cloned().unwrap_or(body);
-    let keys: Vec<MetadataKey> = serde_json::from_value(data)?;
-
-    for metadata_key in &keys {
-        for share in &metadata_key.metadata_private_keys {
-            if share.user_id.as_deref() == Some(user_id) {
-                let plaintext = crypto::decrypt_message(&share.data, private_key, passphrase)
-                    .map_err(|error| {
-                        CryptoError::Decrypt(format!(
-                            "Failed to decrypt metadata private key share: {error}"
-                        ))
-                    })?;
-                let armored = String::from_utf8(plaintext).map_err(|error| {
-                    PassboltError::Other(format!("Metadata key is not valid UTF-8: {error}"))
-                })?;
-                let key = crypto::parse_private_key(&armored)?;
-                return Ok(Some(key.key.clone()));
-            }
-        }
-    }
-
-    Ok(None)
 }
 
 /// `id` unchanged if it is a hyphenated UUID, the only form safe to put in a URL path.
@@ -201,7 +162,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             private_key,
             passphrase,
             user_id: std::mem::take(&mut tokens.user_id),
-            metadata_private_key: OnceLock::new(),
+            metadata_keys: OnceLock::new(),
             mfa_provider,
             mfa_attempts: max_attempts.max(1),
         };
@@ -603,57 +564,44 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── v5 Metadata key ────────────────────────────────────────────────────────
 
-    /// Fetch the org-wide metadata private key and cache it for the session.
-    pub async fn ensure_metadata_key(&self) -> Result<Option<&SignedSecretKey>, PassboltError> {
-        if let Some(cached_key) = self.metadata_private_key.get() {
-            return Ok(cached_key.as_ref());
+    /// The shared metadata keys the user holds a share of, cached for the session.
+    pub async fn metadata_keys(&self) -> Result<Arc<MetadataKeys>, PassboltError> {
+        if let Some(keys) = self.metadata_keys.get() {
+            return Ok(Arc::clone(keys));
         }
-
-        let result = fetch_metadata_key(
-            self,
+        let keys: Vec<MetadataKey> = self
+            .get("/metadata/keys.json?contain[metadata_private_keys]=1&filter[deleted]=0")
+            .await?;
+        let decrypted_keys = Arc::new(MetadataKeys::decrypt(
+            &keys,
             &self.user_id,
             &self.private_key.key,
             self.passphrase.expose_secret(),
-        )
-        .await?;
-
-        // If another caller already set it, that's fine — both fetches are idempotent.
-        let _ = self.metadata_private_key.set(result);
-        Ok(self.metadata_private_key.get().unwrap().as_ref())
+        )?);
+        // A concurrent caller may have set it first: both decrypted the same keys.
+        Ok(Arc::clone(
+            self.metadata_keys.get_or_init(|| decrypted_keys),
+        ))
     }
 
-    /// Decrypt the PGP-armored `metadata` field of a v5 resource.
+    /// Decrypt the `metadata` of a v5 resource; `None` for a v4 resource.
     pub async fn decrypt_resource_metadata(
         &self,
         resource: &Resource,
     ) -> Result<Option<ResourceMetadata>, PassboltError> {
-        let Some(armored) = resource.armored_metadata() else {
-            return Ok(None);
+        let needs_shared_keys =
+            resource.is_v5() && resource.metadata_key_type.as_deref() != Some("user_key");
+        let shared_keys = if needs_shared_keys {
+            self.metadata_keys().await?
+        } else {
+            Arc::default()
         };
-
-        let plaintext = match resource.metadata_key_type.as_deref() {
-            Some("user_key") => crypto::decrypt_message(
-                armored,
-                &self.private_key.key,
-                self.passphrase.expose_secret(),
-            )
-            .map_err(|error| {
-                CryptoError::Decrypt(format!("resource metadata (user_key): {error}"))
-            })?,
-            _ => match self.ensure_metadata_key().await? {
-                Some(key) => crypto::decrypt_message(armored, key, self.passphrase.expose_secret())
-                    .map_err(|error| {
-                        CryptoError::Decrypt(format!("resource metadata (shared_key): {error}"))
-                    })?,
-                None => return Ok(None),
-            },
-        };
-
-        let text = String::from_utf8(plaintext).map_err(|error| {
-            PassboltError::Other(format!("Resource metadata is not valid UTF-8: {error}"))
-        })?;
-        let metadata = serde_json::from_str::<ResourceMetadata>(&text)?;
-        Ok(Some(metadata))
+        metadata::decrypt_resource_metadata(
+            resource,
+            &self.private_key.key,
+            self.passphrase.expose_secret(),
+            &shared_keys,
+        )
     }
 
     // ── Batch decrypt (native only — requires tokio JoinSet) ────────────────
@@ -677,7 +625,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         let pgp_key = Arc::new(self.private_key.key.clone());
         let passphrase = Arc::new(self.passphrase.clone());
 
-        let mut tasks: JoinSet<(String, SecretData)> = JoinSet::new();
+        let mut tasks: JoinSet<Result<(String, SecretData), PassboltError>> = JoinSet::new();
 
         for resource in resources {
             let encrypted = resource
@@ -695,52 +643,41 @@ impl<H: HttpClient> PassboltSdk<H> {
 
             tasks.spawn_blocking(move || {
                 let _permit = permit;
-                let secret = if encrypted.is_empty() {
-                    SecretData::default()
-                } else {
+                if encrypted.is_empty() {
+                    return Ok((id, SecretData::default()));
+                }
+                let plaintext =
                     crypto::decrypt_message(&encrypted, &key, task_passphrase.expose_secret())
-                        .map_or_else(
-                            |_| SecretData::default(),
-                            |plaintext| {
-                                let text = String::from_utf8(plaintext).unwrap_or_default();
-                                serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| {
-                                    SecretData {
-                                        password: Some(text.clone()),
-                                        raw: Some(text),
-                                        ..Default::default()
-                                    }
-                                })
-                            },
-                        )
-                };
-                (id, secret)
+                        .map_err(|error| {
+                            CryptoError::Decrypt(format!("resource {id} secret: {error}"))
+                        })?;
+                Ok((id, parse_secret(plaintext)?))
             });
         }
 
         let mut secrets = HashMap::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((id, secret)) = result {
-                secrets.insert(id, secret);
-            }
+            let (id, secret) = result.map_err(|error| {
+                PassboltError::Other(format!("Decryption task failed: {error}"))
+            })??;
+            secrets.insert(id, secret);
         }
 
         Ok(secrets)
     }
 
-    /// Decrypt v5 metadata for a batch of resources.
+    /// Decrypt the metadata of the v5 resources among `resources`, by resource id.
     pub async fn decrypt_metadata_batch(
         &self,
         resources: &[Resource],
-    ) -> HashMap<String, ResourceMetadata> {
+    ) -> Result<HashMap<String, ResourceMetadata>, PassboltError> {
         let mut metadatas = HashMap::new();
         for resource in resources {
-            if resource.is_v5() {
-                if let Ok(Some(metadata)) = self.decrypt_resource_metadata(resource).await {
-                    metadatas.insert(resource.id.clone(), metadata);
-                }
+            if let Some(metadata) = self.decrypt_resource_metadata(resource).await? {
+                metadatas.insert(resource.id.clone(), metadata);
             }
         }
-        metadatas
+        Ok(metadatas)
     }
 
     // ── Crypto accessors ────────────────────────────────────────────────────
@@ -859,16 +796,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         )
         .map_err(|error| CryptoError::Decrypt(format!("resource secret: {error}")))?;
 
-        let text = String::from_utf8(plaintext)
-            .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))?;
-
-        Ok(
-            serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| SecretData {
-                password: Some(text.clone()),
-                raw: Some(text),
-                ..Default::default()
-            }),
-        )
+        parse_secret(plaintext)
     }
 
     /// Encrypt a secret for the given user IDs.

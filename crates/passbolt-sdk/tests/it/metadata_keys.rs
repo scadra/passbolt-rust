@@ -10,8 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use passbolt_sdk::{ApiError, PassboltError};
-use serde_json::Value;
+use passbolt_sdk::{ApiError, CryptoError, PassboltError};
+use serde_json::{json, Value};
 
 use crate::common::*;
 
@@ -30,7 +30,7 @@ async fn a_refused_metadata_key_request_is_an_api_error_with_the_server_message(
     fake.on_error_saying("GET", METADATA_KEYS_PATH, 403, "Access denied.");
     let client = login_ada(&fake).await;
 
-    let error = client.ensure_metadata_key().await.unwrap_err();
+    let error = client.metadata_keys().await.unwrap_err();
 
     let PassboltError::Api(ApiError {
         status, message, ..
@@ -43,52 +43,60 @@ async fn a_refused_metadata_key_request_is_an_api_error_with_the_server_message(
 }
 
 #[tokio::test]
-async fn the_metadata_key_request_includes_the_private_key_shares() {
+async fn the_metadata_key_request_asks_for_the_shares_of_keys_not_deleted() {
     let fake = FakePassbolt::new();
     fake.on("GET", METADATA_KEYS_PATH, metadata_keys_for_betty());
     let client = login_ada(&fake).await;
 
-    client.ensure_metadata_key().await.unwrap();
+    client.metadata_keys().await.unwrap();
 
+    let request = &fake.requests_to("GET", METADATA_KEYS_PATH)[0];
     assert_eq!(
-        fake.requests_to("GET", METADATA_KEYS_PATH)[0]
+        request
             .query_value("contain[metadata_private_keys]")
             .as_deref(),
         Some("1")
     );
+    assert_eq!(request.query_value("filter[deleted]").as_deref(), Some("0"));
 }
 
 #[tokio::test]
-async fn no_share_for_the_user_means_no_metadata_key() {
+async fn a_key_without_a_share_for_the_user_is_skipped() {
     let fake = FakePassbolt::new();
     fake.on("GET", METADATA_KEYS_PATH, metadata_keys_for_betty());
     let client = login_ada(&fake).await;
 
-    let metadata_key = client.ensure_metadata_key().await.unwrap();
+    let metadata_keys = client.metadata_keys().await.unwrap();
 
-    assert!(metadata_key.is_none());
+    assert!(metadata_keys.is_empty());
 }
 
 #[tokio::test]
-async fn shared_metadata_without_a_key_share_is_not_decrypted() {
+async fn shared_metadata_without_a_key_share_is_an_error() {
     let fake = FakePassbolt::new();
     fake.on("GET", METADATA_KEYS_PATH, metadata_keys_for_betty());
     let client = login_ada(&fake).await;
     let resource = data::resource_v5(&data::metadata("GitHub"), &METADATA, "shared_key", "mk1");
 
-    let metadata = client.decrypt_resource_metadata(&resource).await.unwrap();
+    let error = client
+        .decrypt_resource_metadata(&resource)
+        .await
+        .unwrap_err();
 
-    assert!(metadata.is_none());
+    assert!(
+        error.to_string().contains("mk1 is not shared with you"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
-async fn a_missing_metadata_key_is_looked_up_once() {
+async fn metadata_keys_are_looked_up_once() {
     let fake = FakePassbolt::new();
     fake.on("GET", METADATA_KEYS_PATH, metadata_keys_for_betty());
     let client = login_ada(&fake).await;
 
-    client.ensure_metadata_key().await.unwrap();
-    client.ensure_metadata_key().await.unwrap();
+    client.metadata_keys().await.unwrap();
+    client.metadata_keys().await.unwrap();
 
     assert_eq!(fake.requests_to("GET", METADATA_KEYS_PATH).len(), 1);
 }
@@ -101,7 +109,42 @@ async fn an_undecryptable_key_share_is_a_crypto_error() {
     fake.on("GET", METADATA_KEYS_PATH, metadata_keys);
     let client = login_ada(&fake).await;
 
-    let error = client.ensure_metadata_key().await.unwrap_err();
+    let error = client.metadata_keys().await.unwrap_err();
 
     assert!(matches!(error, PassboltError::Crypto(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn rejects_a_share_holding_another_key() {
+    let share = ADA.encrypt(&data::metadata_private_key(&SERVER));
+    let keys = json!([data::metadata_key("mk1", &METADATA, &share)]);
+    let fake = FakePassbolt::new();
+    fake.on("GET", METADATA_KEYS_PATH, keys);
+    let client = login_ada(&fake).await;
+
+    let error = client.metadata_keys().await.unwrap_err();
+
+    assert!(
+        matches!(&error, PassboltError::Crypto(CryptoError::KeyParse(message)) if message.contains("fingerprint mismatch")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_a_share_that_is_not_a_metadata_private_key() {
+    let mut private_key_data: Value =
+        serde_json::from_str(&data::metadata_private_key(&METADATA)).unwrap();
+    private_key_data["object_type"] = "PASSBOLT_SECRET_DATA".into();
+    let share = ADA.encrypt(&private_key_data.to_string());
+    let keys = json!([data::metadata_key("mk1", &METADATA, &share)]);
+    let fake = FakePassbolt::new();
+    fake.on("GET", METADATA_KEYS_PATH, keys);
+    let client = login_ada(&fake).await;
+
+    let error = client.metadata_keys().await.unwrap_err();
+
+    assert!(
+        matches!(&error, PassboltError::Crypto(CryptoError::KeyParse(message)) if message.contains("object_type")),
+        "{error:?}"
+    );
 }

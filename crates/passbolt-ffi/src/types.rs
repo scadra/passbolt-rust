@@ -843,6 +843,7 @@ mod tests {
                 "issuer": "Passbolt"
             }))),
             raw: Some("raw secret".into()),
+            ..types::SecretData::default()
         };
 
         let ffi_secret_data = FfiSecretData::from(secret_data);

@@ -46,6 +46,7 @@ pub mod filter;
 pub mod folder;
 pub mod group;
 pub mod http;
+pub mod metadata;
 pub mod mfa;
 pub mod platform;
 pub mod pwned;
