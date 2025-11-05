@@ -3,5 +3,18 @@
   "resource_type_id": "a2a3c9a0-6e4d-5c7f-8b9a-1d2e3f4a5b60",
   "name": "GitHub",
   "username": "ada",
-  "description": ""
+  "uris": [],
+  "description": "",
+  "icon": {
+    "type": "keepass-icon-set",
+    "value": 42,
+    "background_color": null
+  },
+  "custom_fields": [
+    {
+      "id": "0f7b6a51-0000-4000-8000-0000000000c1",
+      "type": "text",
+      "metadata_key": "Account"
+    }
+  ]
 }

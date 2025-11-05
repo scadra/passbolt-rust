@@ -97,6 +97,11 @@ pub fn metadata(name: &str) -> Value {
     metadata
 }
 
+/// Decrypted v5-default secret, from `secret_v5_default.json`.
+pub fn secret_v5_default() -> Value {
+    fixture!("secret_v5_default.json")
+}
+
 /// v5 resource whose `metadata` is encrypted for `key`.
 pub fn resource_v5(metadata: &Value, key: &TestKey, key_type: &str, key_id: &str) -> Resource {
     let mut resource = fixture!("resource_v5.json");
@@ -117,15 +122,21 @@ pub fn metadata_private_key(key: &TestKey) -> String {
 /// `/metadata/keys.json` body: one share for ada per `(key id, metadata key)`.
 pub fn metadata_keys(keys: &[(&str, &TestKey)]) -> Value {
     keys.iter()
-        .map(|(key_id, key)| {
-            json!({
-                "id": key_id,
-                "fingerprint": key.fingerprint(),
-                "armored_key": key.public,
-                "metadata_private_keys": [{ "user_id": ADA_ID, "data": ADA.encrypt(&metadata_private_key(key)) }]
-            })
-        })
+        .map(|(key_id, key)| metadata_key(key_id, key, &ADA.encrypt(&metadata_private_key(key))))
         .collect()
+}
+
+/// `/metadata/keys.json` item for `key`, with ada's share `share_data`.
+pub fn metadata_key(key_id: &str, key: &TestKey, share_data: &str) -> Value {
+    let mut metadata_key = fixture!("metadata_key.json");
+    metadata_key["id"] = key_id.into();
+    metadata_key["fingerprint"] = key.fingerprint().into();
+    metadata_key["armored_key"] = key.public.into();
+    let share = &mut metadata_key["metadata_private_keys"][0];
+    share["metadata_key_id"] = key_id.into();
+    share["user_id"] = ADA_ID.into();
+    share["data"] = share_data.into();
+    metadata_key
 }
 
 pub fn permission(id: &str, aro: &str, aro_foreign_key: &str, permission_type: i32) -> Value {

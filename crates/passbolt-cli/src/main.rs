@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
+use passbolt_sdk::types::ResourceMetadata;
 
 use cli::root::{
     Cli, Commands, CreateEntity, DeleteEntity, GetEntity, ListEntity, MoveEntity, ShareEntity,
@@ -292,20 +293,7 @@ async fn dispatch(
                 let secret =
                     passbolt_sdk::resource::get::get_resource_secret(client, &resource).await?;
 
-                let metadata = if resource.is_v5() {
-                    match client.decrypt_resource_metadata(&resource).await {
-                        Ok(metadata) => metadata,
-                        Err(error) => {
-                            eprintln!(
-                                "[warn] Cannot decrypt metadata for '{}': {error}",
-                                resource.id
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
+                let metadata = client.decrypt_resource_metadata(&resource).await?;
 
                 let name = metadata
                     .as_ref()
@@ -317,7 +305,7 @@ async fn dispatch(
                     .unwrap_or_else(|| resource.username.as_deref().unwrap_or(""));
                 let uri = metadata
                     .as_ref()
-                    .and_then(|metadata| metadata.uris.as_ref()?.first()?.uri.as_deref())
+                    .and_then(ResourceMetadata::uri)
                     .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""));
                 let description = metadata
                     .as_ref()
@@ -506,7 +494,7 @@ async fn dispatch(
                         HashMap::new()
                     };
 
-                    let metadatas = client.decrypt_metadata_batch(&resources).await;
+                    let metadatas = client.decrypt_metadata_batch(&resources).await?;
 
                     let rows: Vec<Vec<String>> = resources
                         .iter()
@@ -528,9 +516,7 @@ async fn dispatch(
                                         })
                                         .to_string(),
                                     "uri" => metadata
-                                        .and_then(|metadata| {
-                                            metadata.uris.as_ref()?.first()?.uri.as_deref()
-                                        })
+                                        .and_then(ResourceMetadata::uri)
                                         .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""))
                                         .to_string(),
                                     "folderparentid" | "folder_parent_id" => {

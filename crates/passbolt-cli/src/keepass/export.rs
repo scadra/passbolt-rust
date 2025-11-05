@@ -21,8 +21,8 @@ use tokio::task::JoinSet;
 use zeroize::ZeroizeOnDrop;
 
 use crate::Client;
-use passbolt_sdk::crypto;
 use passbolt_sdk::types::{Folder, Resource, ResourceMetadata, SecretData, TotpData};
+use passbolt_sdk::{crypto, metadata};
 
 type TaskResult = (
     usize,
@@ -97,17 +97,18 @@ pub async fn export_keepass(
     let pgp_key = client.pgp_key_arc();
     let passphrase = client.passphrase_arc();
 
-    // Fetch the org-wide metadata key once (for v5 resources).
-    let metadata_key: Arc<Option<pgp::SignedSecretKey>> = Arc::new(
+    // Fetch the shared metadata keys once, if a v5 resource needs them.
+    let needs_shared_keys = resources.iter().any(|resource| {
+        resource.is_v5() && resource.metadata_key_type.as_deref() != Some("user_key")
+    });
+    let metadata_keys = if needs_shared_keys {
         client
-            .ensure_metadata_key()
+            .metadata_keys()
             .await
-            .unwrap_or_else(|error| {
-                eprintln!("[warn] Could not fetch metadata key: {error}");
-                None
-            })
-            .cloned(),
-    );
+            .context("Failed to fetch the metadata keys")?
+    } else {
+        Arc::default()
+    };
 
     // Spawn one blocking task per resource; collect (original_index, result)
     let mut tasks: JoinSet<TaskResult> = JoinSet::new();
@@ -116,20 +117,16 @@ pub async fn export_keepass(
         let encrypted = extract_secret_data(resource);
         let name = resource.name.clone();
         let folder_parent_id = resource.folder_parent_id.clone();
-        let task_metadata_armored: Option<String> = resource
-            .metadata_armored
-            .as_ref()
-            .and_then(|value| value.as_str().map(str::to_owned));
-        let task_metadata_key_type = resource.metadata_key_type.clone();
+        let task_resource = resource.clone();
         let key = Arc::clone(&pgp_key);
-        let task_metadata_key = Arc::clone(&metadata_key);
+        let task_metadata_keys = Arc::clone(&metadata_keys);
         let task_passphrase = Arc::clone(&passphrase);
         let task_progress_bar = Arc::clone(&progress_bar);
         let permit = Arc::clone(&semaphore).acquire_owned().await?;
 
         tasks.spawn_blocking(move || {
             let _permit = permit;
-            let result = if encrypted.is_empty() {
+            let secret = if encrypted.is_empty() {
                 Ok(SecretData::default())
             } else {
                 decrypt_secret_sync(&encrypted, &key, task_passphrase.expose_secret())
@@ -137,17 +134,17 @@ pub async fn export_keepass(
             };
 
             // Decrypt v5 metadata synchronously in the same blocking task.
-            let metadata = task_metadata_armored.as_deref().and_then(|armored| {
-                let key_to_use: Option<&pgp::SignedSecretKey> =
-                    if task_metadata_key_type.as_deref() == Some("user_key") {
-                        Some(key.as_ref())
-                    } else {
-                        (*task_metadata_key).as_ref()
-                    };
-                key_to_use.and_then(|selected_key| {
-                    decrypt_metadata_sync(armored, selected_key, task_passphrase.expose_secret())
-                })
-            });
+            let metadata = metadata::decrypt_resource_metadata(
+                &task_resource,
+                &key,
+                task_passphrase.expose_secret(),
+                &task_metadata_keys,
+            )
+            .with_context(|| format!("Failed to decrypt the metadata of '{name}'"));
+            let (result, metadata) = match metadata {
+                Ok(metadata) => (secret, metadata),
+                Err(error) => (Err(error), None),
+            };
 
             task_progress_bar.inc(1);
             (index, folder_parent_id, result, metadata)
@@ -220,17 +217,6 @@ fn extract_secret_data(resource: &Resource) -> String {
         .unwrap_or_default()
 }
 
-/// Synchronous metadata decryption for v5 resources — safe to run in a blocking thread.
-fn decrypt_metadata_sync(
-    armored: &str,
-    key: &pgp::SignedSecretKey,
-    passphrase: &str,
-) -> Option<ResourceMetadata> {
-    let plaintext = crypto::decrypt_message(armored, key, passphrase).ok()?;
-    let text = String::from_utf8(plaintext).ok()?;
-    serde_json::from_str::<ResourceMetadata>(&text).ok()
-}
-
 /// Synchronous GPG decryption + JSON parse — safe to run in a blocking thread.
 fn decrypt_secret_sync(
     armored: &str,
@@ -284,7 +270,7 @@ fn build_entry(
         .unwrap_or_else(|| resource.username.as_deref().unwrap_or(""))
         .to_string();
     let url = metadata
-        .and_then(|metadata| metadata.uris.as_ref()?.first()?.uri.as_deref())
+        .and_then(ResourceMetadata::uri)
         .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""))
         .to_string();
     let notes = metadata
@@ -549,7 +535,6 @@ mod tests {
     use super::*;
     use keepass::db::{Database, Node, Value};
     use keepass::DatabaseKey;
-    use passbolt_sdk::types::ResourceUri;
     use rstest::rstest;
 
     const SERVER_PRIVATE: &str =
@@ -813,11 +798,9 @@ mod tests {
             object_type: Some("PASSBOLT_RESOURCE_METADATA".into()),
             name: Some("meta-name".into()),
             username: Some("meta-user".into()),
-            uris: Some(vec![ResourceUri {
-                uri: Some("https://meta.example".into()),
-                match_field: None,
-            }]),
+            uris: vec!["https://meta.example".into()],
             description: Some("meta-description".into()),
+            ..ResourceMetadata::default()
         };
 
         let entry = build_entry(&resource, &secret, Some(&metadata));

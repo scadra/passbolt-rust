@@ -116,6 +116,18 @@ async fn decrypts_a_password_string_secret() {
 }
 
 #[tokio::test]
+async fn decrypts_a_v5_secret_keeping_every_field() {
+    let client = login_ada(&FakePassbolt::new()).await;
+    let mut plaintext_secret = data::secret_v5_default();
+    plaintext_secret["field_from_a_newer_client"] = json!({"kept": true});
+    let resource = data::resource("v5-default", &plaintext_secret.to_string());
+
+    let secret = client.decrypt_resource_secret(&resource).await.unwrap();
+
+    assert_eq!(serde_json::to_value(&secret).unwrap(), plaintext_secret);
+}
+
+#[tokio::test]
 async fn fetches_the_secret_when_not_embedded() {
     let fake = FakePassbolt::new();
     fake.on(
@@ -424,7 +436,6 @@ async fn create_fails_when_resource_types_are_unavailable() {
 }
 
 #[tokio::test]
-#[ignore = "RES-13: a secret that fails to decrypt comes back empty"]
 async fn batch_decrypt_reports_undecryptable_secrets() {
     let client = login_ada(&FakePassbolt::new()).await;
     let mut resource = data::resource(PASSWORD_AND_DESCRIPTION, "x");

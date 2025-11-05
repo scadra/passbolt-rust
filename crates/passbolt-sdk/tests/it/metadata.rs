@@ -11,9 +11,19 @@
 // @since         0.1.0
 
 use passbolt_sdk::types::{Resource, ResourceMetadata};
+use passbolt_sdk::PassboltError;
 use serde_json::json;
 
 use crate::common::*;
+
+async fn metadata_error(client: &Client, resource: &Resource) -> String {
+    let error = client
+        .decrypt_resource_metadata(resource)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PassboltError::Crypto(_)), "{error:?}");
+    error.to_string()
+}
 
 async fn decrypt_metadata(client: &Client, resource: &Resource) -> ResourceMetadata {
     client
@@ -52,7 +62,6 @@ async fn v4_resources_have_no_metadata() {
 }
 
 #[tokio::test]
-#[ignore = "RES-6: v5 `uris` is an array of strings, not of objects"]
 async fn reads_the_uris() {
     let client = login_ada(&FakePassbolt::new()).await;
     let mut plaintext_metadata = data::metadata("GitHub");
@@ -68,7 +77,6 @@ async fn reads_the_uris() {
 }
 
 #[tokio::test]
-#[ignore = "RES-7: the metadata private key share is JSON, not an armored key"]
 async fn decrypts_shared_metadata() {
     let fake = FakePassbolt::new();
     fake.on(
@@ -84,7 +92,6 @@ async fn decrypts_shared_metadata() {
 }
 
 #[tokio::test]
-#[ignore = "RES-7: the metadata private key share is JSON, not an armored key"]
 async fn fetches_the_metadata_key_once_per_session() {
     let fake = FakePassbolt::new();
     fake.on(
@@ -101,7 +108,6 @@ async fn fetches_the_metadata_key_once_per_session() {
 }
 
 #[tokio::test]
-#[ignore = "RES-11: the metadata key is picked without looking at metadata_key_id"]
 async fn uses_the_metadata_key_named_by_the_resource() {
     let fake = FakePassbolt::new();
     fake.on(
@@ -114,4 +120,54 @@ async fn uses_the_metadata_key_named_by_the_resource() {
     let metadata = decrypt_metadata(&client, &shared_key_resource("GitHub")).await;
 
     assert_eq!(metadata.name.as_deref(), Some("GitHub"));
+}
+
+#[tokio::test]
+async fn personal_metadata_without_key_id_is_v5() {
+    let mut resource = data::resource_v5(&data::metadata("GitHub"), &ADA, "user_key", "");
+    resource.metadata_key_id = None;
+
+    assert!(resource.is_v5());
+}
+
+#[tokio::test]
+async fn keeps_the_icon_custom_fields_and_unknown_fields() {
+    let client = login_ada(&FakePassbolt::new()).await;
+    let mut plaintext_metadata = data::metadata("GitHub");
+    plaintext_metadata["field_from_a_newer_client"] = json!(["kept"]);
+    let resource = data::resource_v5(&plaintext_metadata, &ADA, "user_key", "gpgkey-ada");
+
+    let metadata = decrypt_metadata(&client, &resource).await;
+
+    assert_eq!(serde_json::to_value(&metadata).unwrap(), plaintext_metadata);
+}
+
+#[tokio::test]
+async fn rejects_metadata_that_is_not_resource_metadata() {
+    let client = login_ada(&FakePassbolt::new()).await;
+    let mut plaintext_metadata = data::metadata("GitHub");
+    plaintext_metadata["object_type"] = "PASSBOLT_SECRET_DATA".into();
+    let resource = data::resource_v5(&plaintext_metadata, &ADA, "user_key", "gpgkey-ada");
+
+    let error = metadata_error(&client, &resource).await;
+
+    assert!(error.contains("unexpected object_type"), "{error}");
+}
+
+#[tokio::test]
+async fn batch_reports_metadata_that_cannot_be_decrypted() {
+    let client = login_ada(&FakePassbolt::new()).await;
+    let resource = data::resource_v5(
+        &data::metadata("GitHub"),
+        &BETTY,
+        "user_key",
+        "gpgkey-betty",
+    );
+
+    let error = client
+        .decrypt_metadata_batch(&[resource])
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, PassboltError::Crypto(_)), "{error:?}");
 }

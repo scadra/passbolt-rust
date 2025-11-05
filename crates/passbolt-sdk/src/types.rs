@@ -77,9 +77,11 @@ pub struct Resource {
 
 impl Resource {
     /// Returns `true` for v5 resources (metadata is PGP-encrypted).
+    ///
+    /// Not `metadata_key_id`: it is null for metadata encrypted with the user key.
     #[must_use]
-    pub const fn is_v5(&self) -> bool {
-        self.metadata_key_id.is_some()
+    pub fn is_v5(&self) -> bool {
+        self.armored_metadata().is_some()
     }
 
     /// Return the PGP-armored metadata string for v5 resources.
@@ -103,30 +105,90 @@ pub struct Favorite {
 pub struct MetadataKey {
     pub id: String,
     #[serde(default)]
+    pub fingerprint: Option<String>,
+    /// Public key, used to encrypt shared metadata.
+    #[serde(default)]
+    pub armored_key: Option<String>,
+    #[serde(default)]
+    pub created: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub expired: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub deleted: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub metadata_private_keys: Vec<MetadataPrivateKeyShare>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataPrivateKeyShare {
     #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub metadata_key_id: Option<String>,
+    #[serde(default)]
     pub user_id: Option<String>,
-    /// PGP MESSAGE encrypted with the user's public key.
+    /// `PASSBOLT_METADATA_PRIVATE_KEY` JSON encrypted with the user's public key.
     pub data: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Decrypted v5 `metadata`, the `PASSBOLT_RESOURCE_METADATA` object.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceMetadata {
     pub object_type: Option<String>,
+    #[serde(default)]
+    pub resource_type_id: Option<String>,
     pub name: Option<String>,
+    #[serde(default)]
     pub username: Option<String>,
-    pub uris: Option<Vec<ResourceUri>>,
+    #[serde(default)]
+    pub uris: Vec<String>,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ResourceIcon>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_fields: Option<Vec<CustomField>>,
+    /// Fields this SDK does not know, kept so that an update writes them back.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceUri {
-    pub uri: Option<String>,
-    pub match_field: Option<String>,
+impl ResourceMetadata {
+    /// The main URI: the first of `uris`.
+    #[must_use]
+    pub fn uri(&self) -> Option<&str> {
+        self.uris.first().map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceIcon {
+    /// `keepass-icon-set` or `passbolt-icon-set`.
+    #[serde(rename = "type")]
+    pub icon_set: String,
+    #[serde(default)]
+    pub value: Option<u32>,
+    #[serde(default)]
+    pub background_color: Option<String>,
+}
+
+/// One side of a custom field: the metadata holds `metadata_*`, the secret `secret_*`.
+///
+/// Both sides share the `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomField {
+    pub id: String,
+    /// `text`, `password`, `boolean`, `number` or `uri`.
+    #[serde(rename = "type")]
+    pub field_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_value: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_value: Option<serde_json::Value>,
 }
 
 // ─── Secret ──────────────────────────────────────────────────────────────────
@@ -144,12 +206,22 @@ pub struct Secret {
 /// Plaintext secret data after decryption.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SecretData {
+    /// `PASSBOLT_SECRET_DATA` on v5 secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_type: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub totp: Option<TotpData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_fields: Option<Vec<CustomField>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_code: Option<String>,
+    /// Fields this SDK does not know, kept so that an update writes them back.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
     /// Raw secret when `resource_type` is password-string
     #[serde(skip)]
     pub raw: Option<String>,

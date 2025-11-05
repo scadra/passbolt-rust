@@ -212,3 +212,25 @@ fn table_output_shows_the_decrypted_fields() {
         assert!(shown.contains(expected), "{expected} missing: {shown}");
     }
 }
+
+#[test]
+fn v5_resources_read_back_with_their_decrypted_name() {
+    let resources = run_json(&["list", "resource"]);
+    let v5_ids: Vec<&str> = resources
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|resource| resource["metadata"].is_string())
+        .filter_map(|resource| resource["id"].as_str())
+        .take(10)
+        .collect();
+    assert!(!v5_ids.is_empty(), "the server has no v5 resource for ada");
+
+    for id in v5_ids {
+        let name = &get(id)["name"];
+        assert!(
+            name.as_str().is_some_and(|name| !name.is_empty()),
+            "{id}: {name}"
+        );
+    }
+}
