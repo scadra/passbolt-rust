@@ -11,7 +11,8 @@
 // @since         0.1.0
 
 use pgp::{
-    types::PublicKeyTrait, ArmorOptions, Deserializable, Message, SignedPublicKey, SignedSecretKey,
+    ser::Serialize, types::PublicKeyTrait, ArmorOptions, Deserializable, Message, SignedPublicKey,
+    SignedSecretKey,
 };
 use std::io::Cursor;
 use zeroize::Zeroize;
@@ -72,24 +73,105 @@ pub fn decrypt_message(
         .ok_or_else(|| CryptoError::Decrypt("no literal content".into()))
 }
 
+/// Encrypt `plaintext` for `recipients`, as a binary literal.
 pub fn encrypt_message(
     plaintext: &[u8],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
+    encrypt(&Message::new_literal_bytes("", plaintext), recipients)
+}
+
+/// A key able to sign: a private key and its passphrase.
+pub struct Signer<'a> {
+    pub key: &'a SignedSecretKey,
+    pub passphrase: &'a str,
+}
+
+/// Sign `plaintext` with every signer, then encrypt it for `recipients`, as a UTF-8 text literal.
+///
+/// Passbolt clients sign secrets with the user key, shared metadata with the metadata key too.
+pub fn sign_and_encrypt(
+    plaintext: &str,
+    signers: &[Signer<'_>],
+    recipients: &[&SignedPublicKey],
+) -> Result<String, CryptoError> {
+    use pgp::crypto::hash::HashAlgorithm;
+
+    let mut message = Message::new_literal("", plaintext);
+    for signer in signers {
+        message = message
+            .sign(
+                rand::thread_rng(),
+                signer.key,
+                || signer.passphrase.to_string(),
+                HashAlgorithm::SHA2_256,
+            )
+            .map_err(|error| CryptoError::Encrypt(format!("sign: {error}")))?;
+    }
+    encrypt(&message, recipients)
+}
+
+fn encrypt(message: &Message, recipients: &[&SignedPublicKey]) -> Result<String, CryptoError> {
     use pgp::crypto::sym::SymmetricKeyAlgorithm;
+    use pgp::packet::{PublicKeyEncryptedSessionKey, SymEncryptedProtectedData};
+    use pgp::{Edata, Esk};
 
-    let message = Message::new_literal_bytes("", plaintext);
+    const ALGORITHM: SymmetricKeyAlgorithm = SymmetricKeyAlgorithm::AES256;
+    let failure = |error: pgp::errors::Error| CryptoError::Encrypt(error.to_string());
     let mut rng = rand::thread_rng();
+    let session_key = ALGORITHM.new_session_key(&mut rng);
 
-    let encrypted = message
-        .encrypt_to_keys_seipdv1(&mut rng, SymmetricKeyAlgorithm::AES256, recipients)
-        .map_err(|error| CryptoError::Encrypt(format!("{error}")))?;
+    // Recipients mix primary keys and subkeys: one session key packet each.
+    let esk = recipients
+        .iter()
+        .map(|recipient| {
+            let packet = match encryption_subkey(recipient) {
+                Some(subkey) => PublicKeyEncryptedSessionKey::from_session_key_v3(
+                    &mut rng,
+                    &session_key,
+                    ALGORITHM,
+                    &subkey.key,
+                ),
+                None if recipient.primary_key.is_encryption_key() => {
+                    PublicKeyEncryptedSessionKey::from_session_key_v3(
+                        &mut rng,
+                        &session_key,
+                        ALGORITHM,
+                        &recipient.primary_key,
+                    )
+                }
+                None => {
+                    return Err(CryptoError::Encrypt(format!(
+                        "key {} has no encryption key",
+                        hex::encode_upper(recipient.fingerprint().as_bytes())
+                    )))
+                }
+            };
+            packet
+                .map(Esk::PublicKeyEncryptedSessionKey)
+                .map_err(failure)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let armored = encrypted
+    let data = message.to_bytes().map_err(failure)?;
+    let edata = Edata::SymEncryptedProtectedData(
+        SymEncryptedProtectedData::encrypt_seipdv1(&mut rng, ALGORITHM, &session_key, &data)
+            .map_err(failure)?,
+    );
+    Message::Encrypted { esk, edata }
         .to_armored_string(ArmorOptions::default())
-        .map_err(|error| CryptoError::Encrypt(format!("armor: {error}")))?;
+        .map_err(|error| CryptoError::Encrypt(format!("armor: {error}")))
+}
 
-    Ok(armored)
+/// The subkey flagged for encryption, as `OpenPGP` requires over the primary key.
+fn encryption_subkey(key: &SignedPublicKey) -> Option<&pgp::SignedPublicSubKey> {
+    key.public_subkeys.iter().find(|subkey| {
+        subkey.key.is_encryption_key()
+            && subkey.signatures.iter().any(|signature| {
+                let flags = signature.key_flags();
+                flags.encrypt_comms() || flags.encrypt_storage()
+            })
+    })
 }
 
 #[cfg(test)]
@@ -189,5 +271,57 @@ mod tests {
         let armored = encrypt_message(b"secret", &[&server_public]).unwrap();
 
         assert!(decrypt_message(&armored, &metadata_secret, "").is_err());
+    }
+
+    /// Verify every signature layer of `armored` against `signers`, outermost first.
+    fn verified_text(
+        armored: &str,
+        secret: &SignedSecretKey,
+        signers: &[&SignedPublicKey],
+    ) -> String {
+        let (message, _) = Message::from_armor_single(Cursor::new(armored.as_bytes())).unwrap();
+        let (mut message, _) = message.decrypt(String::new, &[secret]).unwrap();
+        for signer in signers {
+            message.verify(*signer).unwrap();
+            let Message::Signed { message: inner, .. } = message else {
+                panic!(
+                    "not signed by {}",
+                    hex::encode_upper(signer.fingerprint().as_bytes())
+                )
+            };
+            message = *inner.unwrap();
+        }
+        let Message::Literal(literal) = message else {
+            panic!("more signatures than expected")
+        };
+        assert!(!literal.is_binary(), "not a text literal");
+        literal.to_string().unwrap()
+    }
+
+    #[test]
+    fn test_sign_and_encrypt_signs_with_every_signer() {
+        let (server_secret, server_public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+        let (metadata_secret, metadata_public) = keypair(METADATA_PRIVATE, METADATA_PUBLIC);
+        let signers = [
+            Signer {
+                key: &server_secret,
+                passphrase: "",
+            },
+            Signer {
+                key: &metadata_secret,
+                passphrase: "",
+            },
+        ];
+
+        let armored = sign_and_encrypt("signed é", &signers, &[&metadata_public]).unwrap();
+
+        assert_eq!(
+            verified_text(
+                &armored,
+                &metadata_secret,
+                &[&metadata_public, &server_public]
+            ),
+            "signed é"
+        );
     }
 }
