@@ -14,11 +14,11 @@
 
 use std::collections::HashMap;
 
-use pgp::SignedSecretKey;
+use pgp::{SignedPublicKey, SignedSecretKey};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
-use crate::crypto;
+use crate::crypto::{self, Signer};
 use crate::error::{CryptoError, PassboltError};
 use crate::types::{MetadataKey, Resource, ResourceMetadata};
 
@@ -39,14 +39,36 @@ struct MetadataPrivateKey {
     passphrase: SecretString,
 }
 
-/// Shared metadata private keys the user holds a share of, by metadata key id.
+/// The shared metadata key new metadata is encrypted with.
+struct ActiveMetadataKey {
+    id: String,
+    public_key: SignedPublicKey,
+}
+
+/// Shared metadata private keys the user holds a share of, by metadata key id,
+/// and the active key to encrypt new shared metadata.
 #[derive(Default)]
-pub struct MetadataKeys(HashMap<String, MetadataPrivateKey>);
+pub struct MetadataKeys {
+    private_keys: HashMap<String, MetadataPrivateKey>,
+    active: Option<ActiveMetadataKey>,
+}
+
+/// Encrypted `metadata` and the key it is encrypted for, as resources carry them.
+#[derive(Debug, Clone)]
+pub struct EncryptedMetadata {
+    pub metadata: String,
+    pub metadata_key_id: String,
+    /// `user_key` or `shared_key`.
+    pub metadata_key_type: &'static str,
+}
 
 /// Lists the key ids only: the keys are secret.
 impl std::fmt::Debug for MetadataKeys {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_set().entries(self.0.keys()).finish()
+        formatter
+            .debug_set()
+            .entries(self.private_keys.keys())
+            .finish()
     }
 }
 
@@ -76,18 +98,91 @@ impl MetadataKeys {
             let private_key = parse_private_key_data(metadata_key, &plaintext)?;
             decrypted_keys.insert(metadata_key.id.clone(), private_key);
         }
-        Ok(Self(decrypted_keys))
+        Ok(Self {
+            private_keys: decrypted_keys,
+            active: active_key(keys)?,
+        })
     }
 
+    /// Encrypt `metadata` for the active shared key, signed by the user and by that key.
+    pub fn encrypt(
+        &self,
+        metadata: &ResourceMetadata,
+        user: &Signer<'_>,
+    ) -> Result<EncryptedMetadata, PassboltError> {
+        let active = self.active.as_ref().ok_or_else(|| {
+            CryptoError::Encrypt("the server has no active shared metadata key".into())
+        })?;
+        let mut signers = vec![Signer {
+            key: user.key,
+            passphrase: user.passphrase,
+        }];
+        if let Some(private_key) = self.private_keys.get(&active.id) {
+            signers.push(Signer {
+                key: &private_key.key,
+                passphrase: private_key.passphrase.expose_secret(),
+            });
+        }
+        let plaintext = serde_json::to_string(metadata)?;
+        Ok(EncryptedMetadata {
+            metadata: crypto::sign_and_encrypt(&plaintext, &signers, &[&active.public_key])?,
+            metadata_key_id: active.id.clone(),
+            metadata_key_type: "shared_key",
+        })
+    }
+
+    /// The number of keys the user can decrypt metadata with.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.private_keys.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.private_keys.is_empty()
     }
+}
+
+/// The latest created key neither expired nor deleted: the server accepts only that one.
+fn active_key(keys: &[MetadataKey]) -> Result<Option<ActiveMetadataKey>, PassboltError> {
+    let Some(metadata_key) = keys
+        .iter()
+        .filter(|key| key.deleted.is_none() && key.expired.is_none())
+        .max_by_key(|key| key.created)
+    else {
+        return Ok(None);
+    };
+    let armored_key = metadata_key.armored_key.as_deref().ok_or_else(|| {
+        CryptoError::KeyParse(format!(
+            "metadata key {} has no public key",
+            metadata_key.id
+        ))
+    })?;
+    Ok(Some(ActiveMetadataKey {
+        id: metadata_key.id.clone(),
+        public_key: crypto::parse_public_key(armored_key)?,
+    }))
+}
+
+/// Encrypt `metadata` for the user's own key, signed by the user.
+///
+/// `gpgkey_id` is the id of the user's key on the server, sent as `metadata_key_id`.
+pub fn encrypt_for_user(
+    metadata: &ResourceMetadata,
+    user: &Signer<'_>,
+    user_public_key: &SignedPublicKey,
+    gpgkey_id: &str,
+) -> Result<EncryptedMetadata, PassboltError> {
+    let plaintext = serde_json::to_string(metadata)?;
+    Ok(EncryptedMetadata {
+        metadata: crypto::sign_and_encrypt(
+            &plaintext,
+            std::slice::from_ref(user),
+            &[user_public_key],
+        )?,
+        metadata_key_id: gpgkey_id.to_string(),
+        metadata_key_type: "user_key",
+    })
 }
 
 /// The share must hold the private part of the metadata key it is attached to.
@@ -141,7 +236,7 @@ pub fn decrypt_resource_metadata(
     } else {
         let key_id = resource.metadata_key_id.as_deref().unwrap_or_default();
         let metadata_key = shared_keys
-            .0
+            .private_keys
             .get(key_id)
             .ok_or_else(|| failure(format!("the metadata key {key_id} is not shared with you")))?;
         crypto::decrypt_message(

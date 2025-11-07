@@ -71,4 +71,30 @@ impl TestKey {
     pub fn decrypt_json(&self, armored_message: &str) -> Value {
         serde_json::from_str(&self.decrypt(armored_message)).unwrap()
     }
+
+    /// Decrypt a UTF-8 text message signed by `signers`, outermost signature first.
+    pub fn decrypt_signed(&self, armored_message: &str, signers: &[&Self]) -> String {
+        use pgp::{Deserializable, Message};
+
+        let private_key = crypto::parse_private_key(self.private).unwrap();
+        let (message, _) =
+            Message::from_armor_single(std::io::Cursor::new(armored_message.as_bytes())).unwrap();
+        let (mut message, _) = message
+            .decrypt(|| self.passphrase.to_string(), &[&private_key.key])
+            .unwrap();
+        for signer in signers {
+            message
+                .verify(&crypto::parse_public_key(signer.public).unwrap())
+                .unwrap_or_else(|error| panic!("not signed by {}: {error}", signer.name));
+            let Message::Signed { message: inner, .. } = message else {
+                panic!("not signed by {}", signer.name)
+            };
+            message = *inner.unwrap();
+        }
+        let Message::Literal(literal) = message else {
+            panic!("signed by more keys than expected")
+        };
+        assert!(!literal.is_binary(), "not a text message");
+        literal.to_string().unwrap()
+    }
 }

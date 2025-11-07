@@ -10,82 +10,307 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use serde_json::{json, Map, Value};
+
 use crate::client::PassboltSdk;
+use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
-use crate::types::{CreateResourcePayload, TotpData};
-use serde_json::Value;
+use crate::metadata;
+use crate::resource::schema;
+use crate::types::{
+    CreateResourcePayload, CustomField, Resource, ResourceIcon, ResourceType, SecretPayload,
+    TotpData,
+};
 
-/// Create a new resource with an encrypted secret.
-// Many required arguments — matches the Passbolt API resource fields.
-#[allow(clippy::too_many_arguments)]
+const METADATA_OBJECT_TYPE: &str = "PASSBOLT_RESOURCE_METADATA";
+const SECRET_OBJECT_TYPE: &str = "PASSBOLT_SECRET_DATA";
+
+/// A resource to create. Fields the resource type does not have are refused.
+#[derive(Debug, Clone, Default)]
+pub struct NewResource {
+    /// Resource type slug. By default: from the fields set and the server's default version.
+    pub resource_type: Option<String>,
+    pub name: String,
+    pub username: Option<String>,
+    /// v4 types have a single URI.
+    pub uris: Vec<String>,
+    /// Stored in the v5 metadata, or in the v4 secret.
+    pub description: Option<String>,
+    /// Secret note, the content of a `v5-note`.
+    pub note: Option<String>,
+    pub password: Option<String>,
+    pub totp: Option<TotpData>,
+    pub pin_code: Option<String>,
+    pub icon: Option<ResourceIcon>,
+    /// Each field with its metadata side (`metadata_key`…) and secret side (`secret_value`…).
+    pub custom_fields: Vec<CustomField>,
+    pub folder_parent_id: Option<String>,
+    /// Expiry date, RFC 3339.
+    pub expired: Option<String>,
+}
+
+/// Create a resource, encrypting its secret for the user, and v5 metadata as the server settings require.
 pub async fn create_resource<H: HttpClient>(
     client: &PassboltSdk<H>,
-    name: &str,
-    username: Option<&str>,
-    uri: Option<&str>,
-    description: Option<&str>,
-    password: Option<&str>,
-    folder_parent_id: Option<&str>,
-    expiry: Option<Value>,
-    totp: Option<TotpData>,
-) -> Result<crate::types::Resource, PassboltError> {
-    // Determine resource type slug and build secret JSON accordingly
-    let (resource_type_slug, secret_data) = match (&totp, password) {
-        (Some(totp_data), Some(password)) => {
-            // Password + TOTP
-            let data = serde_json::json!({
-                "password": password,
-                "description": description.unwrap_or(""),
-                "totp": totp_data
-            });
-            ("password-description-totp", data)
-        }
-        (Some(totp_data), None) => {
-            // TOTP only
-            let data = serde_json::json!({ "totp": totp_data });
-            ("totp", data)
-        }
-        (None, Some(password)) => {
-            // Password + description (default)
-            let data = serde_json::json!({
-                "password": password,
-                "description": description.unwrap_or("")
-            });
-            ("password-and-description", data)
-        }
-        (None, None) => {
-            return Err(PassboltError::InvalidArgument(
-                "Either --password or --totp-key must be provided".into(),
-            ));
-        }
+    new_resource: &NewResource,
+) -> Result<Resource, PassboltError> {
+    let settings = client.metadata_settings().await?;
+    let slug = match &new_resource.resource_type {
+        Some(slug) => slug.as_str(),
+        None => default_slug(
+            new_resource,
+            settings.types.creates_v5_resources_by_default(),
+        )?,
     };
+    if slug == "v5-password-string" {
+        return Err(PassboltError::InvalidArgument(
+            "v5-password-string is read-only: the server refuses to create it".into(),
+        ));
+    }
+    let resource_type = client.resource_type_by_slug(slug).await?;
+    if !settings
+        .types
+        .allows_resource_creation(resource_type.is_v5())
+    {
+        let version = if resource_type.is_v5() { "v5" } else { "v4" };
+        return Err(PassboltError::InvalidArgument(format!(
+            "The server settings do not allow creating {version} resources"
+        )));
+    }
 
-    let secret_json = serde_json::to_string(&secret_data)?;
+    let documents = Documents::build(new_resource, &resource_type)?;
+    let me = client.get_me().await?;
+    let gpgkey = me.gpg_key.as_ref();
+    let user_public_key = crypto::parse_public_key(
+        gpgkey
+            .and_then(|gpgkey| gpgkey.armored_key.as_deref())
+            .ok_or_else(|| PassboltError::NotFound("Your GPG key".into()))?,
+    )?;
+    let user = client.user_signer();
+    let secret =
+        crypto::sign_and_encrypt(&documents.secret_plaintext()?, &[user], &[&user_public_key])?;
 
-    // Look up the resource_type_id for this slug (best-effort; None = server default)
-    let resource_type_id = client
-        .get_resource_type_id_by_slug(resource_type_slug)
-        .await
-        .ok()
-        .flatten();
-
-    // Encrypt for current user only (they can share later)
-    let me_id = client.get_me().await?.id;
-    let secrets = client
-        .encrypt_secret_for_users(&secret_json, &[me_id])
-        .await?;
-
-    let payload = CreateResourcePayload {
-        name: name.to_string(),
-        username: username.map(String::from),
-        uri: uri.map(String::from),
-        description: None, // stored in encrypted secret
-        folder_parent_id: folder_parent_id.map(String::from),
-        resource_type_id,
-        secrets,
-        expired: expiry.and_then(|expiry| expiry.as_str().map(String::from)),
+    let mut payload = CreateResourcePayload {
+        name: None,
+        username: None,
+        uri: None,
+        description: None,
+        folder_parent_id: new_resource.folder_parent_id.clone(),
+        resource_type_id: Some(resource_type.id.clone()),
+        secrets: vec![SecretPayload {
+            user_id: me.id.clone(),
+            data: secret,
+        }],
+        expired: new_resource.expired.clone(),
+        metadata: None,
+        metadata_key_id: None,
+        metadata_key_type: None,
     };
+    if resource_type.is_v5() {
+        let resource_metadata = serde_json::from_value(Value::Object(documents.resource))?;
+        let user = client.user_signer();
+        let encrypted = if settings.keys.allows_personal_keys() {
+            let gpgkey_id = gpgkey
+                .and_then(|gpgkey| gpgkey.id.as_deref())
+                .ok_or_else(|| PassboltError::NotFound("Your GPG key id".into()))?;
+            metadata::encrypt_for_user(&resource_metadata, &user, &user_public_key, gpgkey_id)?
+        } else {
+            client
+                .metadata_keys()
+                .await?
+                .encrypt(&resource_metadata, &user)?
+        };
+        payload.metadata = Some(encrypted.metadata);
+        payload.metadata_key_id = Some(encrypted.metadata_key_id);
+        payload.metadata_key_type = Some(encrypted.metadata_key_type.into());
+    } else {
+        let field = |name: &str| {
+            documents
+                .resource
+                .get(name)
+                .and_then(Value::as_str)
+                .map(String::from)
+        };
+        payload.name = field("name");
+        payload.username = field("username");
+        payload.uri = field("uri");
+        payload.description = field("description");
+    }
 
     client.create_resource(&payload).await
+}
+
+/// The slug matching the fields set, in the server's default version.
+fn default_slug(new_resource: &NewResource, v5: bool) -> Result<&'static str, PassboltError> {
+    let has_password = new_resource.password.is_some();
+    let has_totp = new_resource.totp.is_some();
+    let slug = match (v5, has_password, has_totp) {
+        (true, true, true) => "v5-default-with-totp",
+        (true, true, false) => "v5-default",
+        (true, false, true) => "v5-totp-standalone",
+        (true, false, false) if new_resource.pin_code.is_some() => "v5-pin-code",
+        (true, false, false) if !new_resource.custom_fields.is_empty() => "v5-custom-fields",
+        (true, false, false) if new_resource.note.is_some() => "v5-note",
+        (false, true, true) => "password-description-totp",
+        (false, true, false) => "password-and-description",
+        (false, false, true) => "totp",
+        _ => return Err(PassboltError::InvalidArgument(
+            "Nothing to keep secret: set a password, a TOTP, a PIN code, custom fields or a note"
+                .into(),
+        )),
+    };
+    Ok(slug)
+}
+
+/// The `resource` (v4 fields or v5 metadata) and `secret` documents, checked against the type.
+struct Documents {
+    resource: Map<String, Value>,
+    secret: Value,
+}
+
+impl Documents {
+    fn build(
+        new_resource: &NewResource,
+        resource_type: &ResourceType,
+    ) -> Result<Self, PassboltError> {
+        let invalid = |reason: String| {
+            PassboltError::InvalidArgument(format!("{}: {reason}", resource_type.slug))
+        };
+        let mut resource = Map::new();
+        let mut secret = Map::new();
+        resource.insert("name".into(), new_resource.name.clone().into());
+        insert(
+            &mut resource,
+            "username",
+            new_resource.username.clone().map(Value::from),
+        );
+        if resource_type.is_v5() {
+            if !new_resource.uris.is_empty() {
+                resource.insert("uris".into(), json!(new_resource.uris));
+            }
+        } else if let [uri] = new_resource.uris.as_slice() {
+            resource.insert("uri".into(), uri.clone().into());
+        } else if new_resource.uris.len() > 1 {
+            return Err(invalid("v4 resource types have a single URI".into()));
+        }
+        let description = new_resource.description.clone().map(Value::from);
+        if resource_type.resource_has_field("description") {
+            insert(&mut resource, "description", description);
+        } else {
+            insert(&mut secret, "description", description);
+        }
+        if let Some(note) = &new_resource.note {
+            if secret.contains_key("description") || !resource_type.is_v5() {
+                return Err(invalid(
+                    "a note is the secret description of v5 types".into(),
+                ));
+            }
+            secret.insert("description".into(), note.clone().into());
+        }
+        insert(
+            &mut resource,
+            "icon",
+            new_resource
+                .icon
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+        );
+        if !new_resource.custom_fields.is_empty() {
+            let (metadata_side, secret_side) = split_custom_fields(&new_resource.custom_fields);
+            resource.insert("custom_fields".into(), serde_json::to_value(metadata_side)?);
+            secret.insert("custom_fields".into(), serde_json::to_value(secret_side)?);
+        }
+        insert(
+            &mut secret,
+            "password",
+            new_resource.password.clone().map(Value::from),
+        );
+        insert(
+            &mut secret,
+            "totp",
+            new_resource
+                .totp
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+        );
+        insert(
+            &mut secret,
+            "pin_code",
+            new_resource.pin_code.clone().map(Value::from),
+        );
+
+        let secret = if resource_type.secret_is_string() {
+            let password = secret.remove("password").unwrap_or(Value::Null);
+            if let Some(field) = secret.keys().next() {
+                return Err(invalid(format!(
+                    "{field} is not allowed by this resource type"
+                )));
+            }
+            password
+        } else {
+            if resource_type.is_v5() {
+                secret.insert("object_type".into(), SECRET_OBJECT_TYPE.into());
+            }
+            Value::Object(secret)
+        };
+
+        let resource_schema = resource_type
+            .resource_schema()
+            .ok_or_else(|| invalid("this resource type is not supported".into()))?;
+        let secret_schema = resource_type
+            .secret_schema()
+            .ok_or_else(|| invalid("this resource type is not supported".into()))?;
+        schema::validate(resource_schema, &Value::Object(resource.clone())).map_err(invalid)?;
+        schema::validate(secret_schema, &secret).map_err(invalid)?;
+
+        if resource_type.is_v5() {
+            resource.insert("object_type".into(), METADATA_OBJECT_TYPE.into());
+            resource.insert("resource_type_id".into(), resource_type.id.clone().into());
+        }
+        Ok(Self { resource, secret })
+    }
+
+    fn secret_plaintext(&self) -> Result<String, PassboltError> {
+        Ok(match &self.secret {
+            Value::String(password) => password.clone(),
+            secret => serde_json::to_string(secret)?,
+        })
+    }
+}
+
+fn insert(document: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    if let Some(value) = value {
+        document.insert(key.into(), value);
+    }
+}
+
+/// The metadata side and the secret side of custom fields, paired by id.
+fn split_custom_fields(custom_fields: &[CustomField]) -> (Vec<CustomField>, Vec<CustomField>) {
+    custom_fields
+        .iter()
+        .map(|field| {
+            let side = || CustomField {
+                id: field.id.clone(),
+                field_type: field.field_type.clone(),
+                metadata_key: None,
+                metadata_value: None,
+                secret_key: None,
+                secret_value: None,
+            };
+            let metadata_side = CustomField {
+                metadata_key: field.metadata_key.clone(),
+                metadata_value: field.metadata_value.clone(),
+                ..side()
+            };
+            let secret_side = CustomField {
+                secret_key: field.secret_key.clone(),
+                secret_value: field.secret_value.clone(),
+                ..side()
+            };
+            (metadata_side, secret_side)
+        })
+        .unzip()
 }

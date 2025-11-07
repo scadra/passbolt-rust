@@ -12,7 +12,8 @@
 
 use std::collections::BTreeSet;
 
-use passbolt_sdk::resource::{create, update};
+use passbolt_sdk::resource::create::{self, NewResource};
+use passbolt_sdk::resource::update;
 use passbolt_sdk::types::Resource;
 use passbolt_sdk::{ApiError, PassboltError};
 use serde_json::{json, Value};
@@ -58,14 +59,13 @@ async fn create_github_resource(
 ) -> Result<Resource, PassboltError> {
     create::create_resource(
         client,
-        "GitHub",
-        Some("ada"),
-        None,
-        Some("prod"),
-        password,
-        None,
-        None,
-        None,
+        &NewResource {
+            name: "GitHub".into(),
+            username: Some("ada".into()),
+            description: Some("prod".into()),
+            password: password.map(String::from),
+            ..NewResource::default()
+        },
     )
     .await
 }
@@ -419,7 +419,6 @@ async fn update_description_reencrypts_the_secret() {
 }
 
 #[tokio::test]
-#[ignore = "RES-12: a failing /resource-types.json is ignored and the type is left to the server"]
 async fn create_fails_when_resource_types_are_unavailable() {
     let fake = fake_accepting_resource_creation();
     fake.on_error("GET", "/resource-types.json", 500);
@@ -450,7 +449,6 @@ async fn batch_decrypt_reports_undecryptable_secrets() {
 }
 
 #[tokio::test]
-#[ignore = "CRY-1: secrets are encrypted to the primary key, keys with an encryption subkey are unsupported"]
 async fn encrypts_for_a_user_with_an_ecc_key() {
     let fake = FakePassbolt::new();
     fake.with_directory();

@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use pgp::types::SecretKeyTrait;
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use std::sync::{OnceLock, RwLock};
@@ -40,6 +39,8 @@ pub struct PassboltSdk<H: HttpClient> {
     pub user_id: String,
     /// Shared v5 metadata keys, fetched and decrypted at most once per session.
     metadata_keys: OnceLock<Arc<MetadataKeys>>,
+    resource_types: OnceLock<Arc<Vec<ResourceType>>>,
+    metadata_settings: OnceLock<Arc<MetadataSettings>>,
     /// Answers the MFA challenge the server sends on any request after login.
     mfa_provider: Option<Box<dyn MfaProvider>>,
     mfa_attempts: u32,
@@ -163,6 +164,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             passphrase,
             user_id: std::mem::take(&mut tokens.user_id),
             metadata_keys: OnceLock::new(),
+            resource_types: OnceLock::new(),
+            metadata_settings: OnceLock::new(),
             mfa_provider,
             mfa_attempts: max_attempts.max(1),
         };
@@ -799,6 +802,14 @@ impl<H: HttpClient> PassboltSdk<H> {
         parse_secret(plaintext)
     }
 
+    /// The user's key, to sign what the user encrypts.
+    pub(crate) fn user_signer(&self) -> crypto::Signer<'_> {
+        crypto::Signer {
+            key: &self.private_key.key,
+            passphrase: self.passphrase.expose_secret(),
+        }
+    }
+
     /// Encrypt a secret for the given user IDs.
     pub async fn encrypt_secret_for_users(
         &self,
@@ -1047,15 +1058,37 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── Resource types ────────────────────────────────────────────────────────
 
+    /// The resource types, cached for the session.
+    pub async fn resource_types(&self) -> Result<Arc<Vec<ResourceType>>, PassboltError> {
+        if let Some(types) = self.resource_types.get() {
+            return Ok(Arc::clone(types));
+        }
+        let types: Vec<ResourceType> = self.get("/resource-types.json").await?;
+        Ok(Arc::clone(
+            self.resource_types.get_or_init(|| Arc::new(types)),
+        ))
+    }
+
+    /// The resource type named `slug`; an error if the server does not have it.
+    pub async fn resource_type_by_slug(&self, slug: &str) -> Result<ResourceType, PassboltError> {
+        self.resource_types()
+            .await?
+            .iter()
+            .find(|resource_type| resource_type.slug == slug)
+            .cloned()
+            .ok_or_else(|| PassboltError::InvalidArgument(format!("Unknown resource type: {slug}")))
+    }
+
     pub async fn get_resource_type_id_by_slug(
         &self,
         slug: &str,
     ) -> Result<Option<String>, PassboltError> {
-        let types: Vec<ResourceType> = self.get("/resource-types.json").await?;
-        Ok(types
-            .into_iter()
+        Ok(self
+            .resource_types()
+            .await?
+            .iter()
             .find(|resource_type| resource_type.slug == slug)
-            .map(|resource_type| resource_type.id))
+            .map(|resource_type| resource_type.id.clone()))
     }
 
     // ── Move ──────────────────────────────────────────────────────────────────
@@ -1263,6 +1296,26 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     // ── Metadata Settings ────────────────────────────────────────────────────
 
+    /// The metadata types and keys settings, cached for the session.
+    ///
+    /// Without the Metadata plugin (404), the server defaults apply: v4 only.
+    pub async fn metadata_settings(&self) -> Result<Arc<MetadataSettings>, PassboltError> {
+        if let Some(settings) = self.metadata_settings.get() {
+            return Ok(Arc::clone(settings));
+        }
+        let settings = match self.get_metadata_types_settings().await {
+            Ok(types) => MetadataSettings {
+                types,
+                keys: self.get_metadata_keys_settings().await?,
+            },
+            Err(PassboltError::Api(ApiError { status: 404, .. })) => MetadataSettings::default(),
+            Err(error) => return Err(error),
+        };
+        Ok(Arc::clone(
+            self.metadata_settings.get_or_init(|| Arc::new(settings)),
+        ))
+    }
+
     /// Get metadata types settings (which versions are allowed).
     pub async fn get_metadata_types_settings(
         &self,
@@ -1304,49 +1357,6 @@ impl<H: HttpClient> PassboltSdk<H> {
         let body = serde_json::to_value(entries)?;
         let _: Value = self.post("/metadata/keys/private.json", &body).await?;
         Ok(())
-    }
-
-    /// Encrypt metadata for a v5 resource.
-    ///
-    /// Returns the PGP-armored encrypted metadata string.
-    pub fn encrypt_metadata(
-        &self,
-        metadata: &ResourceMetadata,
-        is_personal: bool,
-    ) -> Result<(String, Option<String>), PassboltError> {
-        let json = serde_json::to_string(metadata)?;
-        if is_personal {
-            // Encrypt with user's own public key (sign the unsigned key first)
-            let mut rng = rand::thread_rng();
-            let unsigned_public_key = self.private_key.key.public_key();
-            let signed_public_key = unsigned_public_key
-                .sign(&mut rng, &self.private_key.key, || {
-                    self.passphrase.expose_secret().to_string()
-                })
-                .map_err(|error| CryptoError::Encrypt(format!("sign public key: {error}")))?;
-            let armored = crypto::encrypt_message(json.as_bytes(), &[&signed_public_key])
-                .map_err(|error| CryptoError::Encrypt(format!("metadata (user_key): {error}")))?;
-            Ok((armored, None))
-        } else {
-            // Requires a shared metadata key — caller must ensure it's available
-            Err(PassboltError::Other(
-                "Shared metadata encryption requires metadata key; use encrypt_metadata_with_key"
-                    .into(),
-            ))
-        }
-    }
-
-    /// Encrypt metadata using a specific public key (for shared metadata keys).
-    pub fn encrypt_metadata_with_key(
-        &self,
-        metadata: &ResourceMetadata,
-        public_key: &pgp::SignedPublicKey,
-        metadata_key_id: &str,
-    ) -> Result<(String, String), PassboltError> {
-        let json = serde_json::to_string(metadata)?;
-        let armored = crypto::encrypt_message(json.as_bytes(), &[public_key])
-            .map_err(|error| CryptoError::Encrypt(format!("metadata (shared_key): {error}")))?;
-        Ok((armored, metadata_key_id.to_string()))
     }
 }
 

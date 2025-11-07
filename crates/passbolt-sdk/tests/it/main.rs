@@ -16,6 +16,7 @@
 mod common;
 
 mod auth;
+mod create_v5;
 mod listing;
 mod login_errors;
 mod metadata;

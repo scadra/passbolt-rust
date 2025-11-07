@@ -1,0 +1,16 @@
+{
+  "default_resource_types": "v5",
+  "default_folder_type": "v4",
+  "default_tag_type": "v4",
+  "default_comment_type": "v4",
+  "allow_creation_of_v5_resources": true,
+  "allow_creation_of_v5_folders": false,
+  "allow_creation_of_v5_tags": false,
+  "allow_creation_of_v5_comments": false,
+  "allow_creation_of_v4_resources": true,
+  "allow_creation_of_v4_folders": true,
+  "allow_creation_of_v4_tags": true,
+  "allow_creation_of_v4_comments": true,
+  "allow_v4_v5_upgrade": false,
+  "allow_v5_v4_downgrade": false
+}
