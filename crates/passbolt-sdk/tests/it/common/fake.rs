@@ -98,6 +98,8 @@ struct State {
     csrf_cookie: Option<String>,
     no_auth_token_header: bool,
     login_verification_error: Option<(u16, String)>,
+    /// `/metadata/types/settings.json`; `None` without the Metadata plugin.
+    metadata_types_settings: Option<Value>,
 }
 
 /// Clones share their state: keep one to inspect what the SDK sent.
@@ -126,6 +128,13 @@ impl FakePassbolt {
         self.on("GET", "/users.json", data::users(&names));
         self.on("GET", "/resource-types.json", data::resource_types());
         self.on("GET", "/roles.json", data::roles());
+    }
+
+    /// The Metadata plugin with `types` and `keys` settings.
+    pub fn with_metadata_settings(&self, types: Value, keys: Value) {
+        self.on("GET", "/metadata/types/settings.json", types.clone());
+        self.on("GET", "/metadata/keys/settings.json", keys);
+        self.state.lock().unwrap().metadata_types_settings = Some(types);
     }
 
     /// Answer `method path` with `body` in a success envelope. Query strings are
@@ -276,6 +285,9 @@ impl FakePassbolt {
         match (method, path) {
             ("POST", "/auth/login.json") => self.gpgauth_login(&body),
             ("POST", "/mfa/verify/totp.json") => self.verify_totp(&body),
+            ("POST", "/resources.json") => self
+                .refuse_resource(&body)
+                .unwrap_or_else(|| self.canned_response(method, path)),
             _ if self.mfa_pending()
                 && !MFA_WHITELIST.iter().any(|prefix| path.starts_with(prefix)) =>
             {
@@ -315,6 +327,64 @@ impl FakePassbolt {
                 .push(("set-cookie-name".into(), format!("csrfToken={CSRF_TOKEN}")));
             state.csrf_cookie = Some(CSRF_TOKEN.to_string());
         }
+    }
+
+    /// The 400 of `MetadataResourceDto`, `MetadataSettingsAwareTrait` and `ResourcesTable` v5 rules.
+    fn refuse_resource(&self, body: &Value) -> Option<HttpResponse> {
+        const URL: &str = "/resources.json";
+        let refuse = |message: &str, errors: Value| Some(json_response(400, message, URL, &errors));
+        let present = |field: &str| !body[field].is_null();
+        let v5_fields = ["metadata", "metadata_key_id", "metadata_key_type"];
+        let settings = self.state.lock().unwrap().metadata_types_settings.clone();
+
+        if !v5_fields.into_iter().any(present) {
+            let refused = settings
+                .is_some_and(|settings| settings["allow_creation_of_v4_resources"] == false);
+            return refused.then(|| {
+                json_response(
+                    400,
+                    "Resource creation with cleartext metadata not allowed.",
+                    URL,
+                    &Value::Null,
+                )
+            });
+        }
+        let Some(settings) = settings else {
+            return refuse("V5 metadata format is not enabled.", Value::Null);
+        };
+        if !v5_fields.into_iter().all(present) {
+            return refuse("Few fields are missing for the V5.", Value::Null);
+        }
+        if ["name", "username", "uri", "description"]
+            .into_iter()
+            .any(present)
+        {
+            return refuse("V4 related fields are not supported for V5.", Value::Null);
+        }
+        if settings["allow_creation_of_v5_resources"] != true {
+            return refuse(
+                "Resource creation/modification with encrypted metadata not allowed.",
+                Value::Null,
+            );
+        }
+        let slug = data::resource_types()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource_type| resource_type["id"] == body["resource_type_id"])
+            .map(|resource_type| resource_type["slug"].as_str().unwrap().to_string());
+        let errors = if !slug.as_deref().is_some_and(|slug| slug.starts_with("v5-")) {
+            json!({"resource_type_id": {"inList": "The resource type should be one of the following: v5 types."}})
+        } else if slug.as_deref() == Some("v5-password-string") {
+            json!({"resource_type_id": {"isNotV5PasswordStringType": "It is not allowed to create v5-password-string resource types."}})
+        } else if !["user_key", "shared_key"]
+            .contains(&body["metadata_key_type"].as_str().unwrap_or_default())
+        {
+            json!({"metadata_key_type": {"inList": "The metadata key type should be one of the following: user_key, shared_key."}})
+        } else {
+            return None;
+        };
+        refuse("Could not validate resource data.", errors)
     }
 
     fn mfa_pending(&self) -> bool {

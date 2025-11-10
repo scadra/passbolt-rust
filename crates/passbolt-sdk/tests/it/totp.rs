@@ -10,7 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use passbolt_sdk::resource::{create, update};
+use passbolt_sdk::resource::create::{self, NewResource};
+use passbolt_sdk::resource::update;
 use passbolt_sdk::types::TotpData;
 use passbolt_sdk::PassboltError;
 use serde_json::{json, Value};
@@ -55,14 +56,12 @@ async fn create_github_resource(
 
     create::create_resource(
         &client,
-        "GitHub",
-        None,
-        None,
-        None,
-        password,
-        None,
-        None,
-        Some(totp),
+        &NewResource {
+            name: "GitHub".into(),
+            password: password.map(String::from),
+            totp: Some(totp),
+            ..NewResource::default()
+        },
     )
     .await
     .unwrap();
@@ -114,7 +113,7 @@ async fn creating_with_a_password_and_a_totp_uses_the_totp_password_type() {
     );
     let secret = ADA.decrypt_json(secret_of(&body, ADA_ID));
     assert_eq!(secret["password"], "s3cr3t");
-    assert_eq!(secret["description"], "");
+    assert!(secret.get("description").is_none(), "{secret}");
     assert_eq!(secret["totp"]["secret_key"], "NEWKEY");
 }
 
@@ -166,7 +165,7 @@ async fn a_new_totp_key_gets_the_default_settings() {
 
     assert_eq!(
         updated_secret(&fake)["totp"],
-        json!({ "secret_key": "NEWKEY", "algorithm": "SHA1", "digits": 6, "period": 30, "issuer": null })
+        json!({ "secret_key": "NEWKEY", "algorithm": "SHA1", "digits": 6, "period": 30 })
     );
 }
 
@@ -186,7 +185,7 @@ async fn a_new_totp_key_keeps_the_existing_settings() {
 
     assert_eq!(
         updated_secret(&fake)["totp"],
-        json!({ "secret_key": "NEWKEY", "algorithm": "SHA256", "digits": 8, "period": 60, "issuer": "GitHub" })
+        json!({ "secret_key": "NEWKEY", "algorithm": "SHA256", "digits": 8, "period": 60 })
     );
 }
 
@@ -209,7 +208,7 @@ async fn a_partial_totp_update_keeps_the_key() {
         json!({
             "password": "p",
             "description": "d",
-            "totp": { "secret_key": "OLDKEY", "algorithm": "SHA256", "digits": 6, "period": 60, "issuer": "GitHub" }
+            "totp": { "secret_key": "OLDKEY", "algorithm": "SHA256", "digits": 6, "period": 60 }
         })
     );
 }

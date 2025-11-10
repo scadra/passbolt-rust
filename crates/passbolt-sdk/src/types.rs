@@ -229,10 +229,16 @@ pub struct SecretData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotpData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub algorithm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digits: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<u64>,
+    /// Read from secrets written by older clients; Passbolt resource types have no issuer.
+    #[serde(default, skip_serializing)]
     pub issuer: Option<String>,
 }
 
@@ -243,7 +249,52 @@ pub struct ResourceType {
     pub id: String,
     pub slug: String,
     pub name: Option<String>,
+    /// JSON Schemas of the `resource` (v4 fields or v5 metadata) and of the `secret`, as stored by the server.
     pub definition: Option<serde_json::Value>,
+}
+
+impl ResourceType {
+    #[must_use]
+    pub fn is_v5(&self) -> bool {
+        self.slug.starts_with("v5-")
+    }
+
+    /// Schema of the v4 resource fields, or of the v5 metadata; `None` for an unknown slug.
+    ///
+    /// From the schemas bundled with the SDK, not `definition`: servers may keep outdated ones.
+    #[must_use]
+    pub fn resource_schema(&self) -> Option<&'static serde_json::Value> {
+        crate::resource::schema::definition(&self.slug)?.get("resource")
+    }
+
+    #[must_use]
+    pub fn secret_schema(&self) -> Option<&'static serde_json::Value> {
+        crate::resource::schema::definition(&self.slug)?.get("secret")
+    }
+
+    /// `password-string` types: the secret is the password itself, not a JSON object.
+    #[must_use]
+    pub fn secret_is_string(&self) -> bool {
+        self.secret_schema()
+            .and_then(|schema| schema.get("type"))
+            .is_some_and(|secret_type| secret_type == "string")
+    }
+
+    #[must_use]
+    pub fn resource_has_field(&self, field: &str) -> bool {
+        has_property(self.resource_schema(), field)
+    }
+
+    #[must_use]
+    pub fn secret_has_field(&self, field: &str) -> bool {
+        has_property(self.secret_schema(), field)
+    }
+}
+
+fn has_property(schema: Option<&serde_json::Value>, field: &str) -> bool {
+    schema
+        .and_then(|schema| schema.get("properties")?.get(field))
+        .is_some()
 }
 
 // ─── Folder ───────────────────────────────────────────────────────────────────
@@ -420,7 +471,9 @@ pub struct ShareChange {
 
 #[derive(Debug, Serialize)]
 pub struct CreateResourcePayload {
-    pub name: String,
+    /// v4 only: v5 resources carry their name in the encrypted `metadata`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -434,6 +487,12 @@ pub struct CreateResourcePayload {
     pub secrets: Vec<SecretPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expired: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_key_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -680,7 +739,7 @@ pub struct GroupDeleteDryRun {
 // ─── Metadata Settings ───────────────────────────────────────────────────────
 
 /// Controls which metadata versions are allowed for creation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetadataTypesSettings {
     #[serde(default)]
     pub default_resource_types: Option<String>,
@@ -708,13 +767,46 @@ pub struct MetadataTypesSettings {
     pub allow_creation_of_v4_comments: Option<bool>,
 }
 
+impl MetadataTypesSettings {
+    /// Resources are created as v5 unless the server says v4, its default.
+    #[must_use]
+    pub fn creates_v5_resources_by_default(&self) -> bool {
+        self.default_resource_types.as_deref() == Some("v5")
+    }
+
+    /// Whether the server accepts new resources of that version, defaulting like the server.
+    #[must_use]
+    pub fn allows_resource_creation(&self, v5: bool) -> bool {
+        if v5 {
+            self.allow_creation_of_v5_resources.unwrap_or(false)
+        } else {
+            self.allow_creation_of_v4_resources.unwrap_or(true)
+        }
+    }
+}
+
 /// Controls metadata key behaviour (personal vs shared keys).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetadataKeysSettings {
     #[serde(default)]
     pub allow_usage_of_personal_keys: Option<bool>,
     #[serde(default)]
     pub zero_knowledge_key_share: Option<bool>,
+}
+
+impl MetadataKeysSettings {
+    /// Personal metadata is allowed unless the server says otherwise, its default.
+    #[must_use]
+    pub fn allows_personal_keys(&self) -> bool {
+        self.allow_usage_of_personal_keys.unwrap_or(true)
+    }
+}
+
+/// Both metadata settings, as a client needs them to create resources.
+#[derive(Debug, Clone, Default)]
+pub struct MetadataSettings {
+    pub types: MetadataTypesSettings,
+    pub keys: MetadataKeysSettings,
 }
 
 // ─── Metadata Private Key Sharing ────────────────────────────────────────────

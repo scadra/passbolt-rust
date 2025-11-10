@@ -97,6 +97,16 @@ pub fn metadata(name: &str) -> Value {
     metadata
 }
 
+/// `/metadata/types/settings.json` of a server creating v5 resources by default.
+pub fn metadata_types_settings() -> Value {
+    fixture!("metadata_types_settings.json")
+}
+
+/// `/metadata/keys/settings.json`, the server defaults: personal keys allowed.
+pub fn metadata_keys_settings() -> Value {
+    fixture!("metadata_keys_settings.json")
+}
+
 /// Decrypted v5-default secret, from `secret_v5_default.json`.
 pub fn secret_v5_default() -> Value {
     fixture!("secret_v5_default.json")
