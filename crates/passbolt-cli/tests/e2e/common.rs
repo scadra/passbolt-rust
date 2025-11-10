@@ -112,8 +112,17 @@ pub fn run_text_as(account: Account, args: &[&str]) -> String {
 }
 
 /// Resource named `name` with `password`, plus any `extra_args`.
+/// A v4 resource, unless `extra_args` sets `--type`: these tests cover the v4 flows.
 pub fn create_resource(name: &str, password: &str, extra_args: &[&str]) -> Cleanup {
     let mut args = vec!["create", "resource", "--name", name, "--password", password];
+    if !extra_args.contains(&"--type") {
+        let v4_type = if extra_args.contains(&"--totp-key") {
+            "password-description-totp"
+        } else {
+            "password-and-description"
+        };
+        args.extend(["--type", v4_type]);
+    }
     args.extend_from_slice(extra_args);
     Cleanup::new("resource", &run_json(&args))
 }

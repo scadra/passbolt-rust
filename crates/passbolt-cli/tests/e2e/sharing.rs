@@ -203,6 +203,8 @@ fn read_only_recipient_cannot_modify_or_delete() {
         &[
             "create",
             "resource",
+            "--type",
+            "password-and-description",
             "--name",
             &unique_name("read-only"),
             "--password",

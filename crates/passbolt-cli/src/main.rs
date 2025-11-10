@@ -175,19 +175,22 @@ async fn dispatch(
         // ── Create ──────────────────────────────────────────────────────────
         Commands::Create(args) => match &args.entity {
             CreateEntity::Resource {
+                resource_type,
                 name,
                 username,
                 uri,
                 password,
                 description,
+                note,
+                pin_code,
                 folder_parent_id,
                 expiry,
                 totp_key,
                 totp_algo,
                 totp_digits,
                 totp_period,
-                totp_issuer,
             } => {
+                use passbolt_sdk::resource::create::NewResource;
                 use secrecy::ExposeSecret;
                 use util::password::read_password;
 
@@ -196,37 +199,52 @@ async fn dispatch(
                     algorithm: totp_algo.clone(),
                     digits: *totp_digits,
                     period: *totp_period,
-                    issuer: totp_issuer.clone(),
+                    issuer: None,
                 });
 
-                let resolved_password: Option<String> = if let Some(provided_password) = password {
-                    Some(provided_password.clone())
-                } else if totp.is_none() {
-                    let prompted_password = read_password("Password: ")?;
-                    Some(prompted_password.expose_secret().to_string())
-                } else {
-                    None
+                let needs_password = resource_type.as_deref().map_or_else(
+                    || totp.is_none() && pin_code.is_none() && note.is_none(),
+                    |slug| {
+                        matches!(
+                            slug,
+                            "password-string"
+                                | "password-and-description"
+                                | "password-description-totp"
+                                | "v5-default"
+                                | "v5-default-with-totp"
+                        )
+                    },
+                );
+                let resolved_password = match password {
+                    Some(provided_password) => Some(provided_password.clone()),
+                    None if needs_password => {
+                        Some(read_password("Password: ")?.expose_secret().to_string())
+                    }
+                    None => None,
                 };
 
-                let expiry_value = parse_expiry_opt(expiry.as_ref())?;
-
-                let resource = passbolt_sdk::resource::create::create_resource(
-                    client,
-                    name,
-                    username.as_deref(),
-                    uri.as_deref(),
-                    description.as_deref(),
-                    resolved_password.as_deref(),
-                    folder_parent_id.as_deref(),
-                    expiry_value,
+                let new_resource = NewResource {
+                    resource_type: resource_type.clone(),
+                    name: name.clone(),
+                    username: username.clone(),
+                    uris: uri.clone(),
+                    description: description.clone(),
+                    note: note.clone(),
+                    password: resolved_password,
                     totp,
-                )
-                .await?;
+                    pin_code: pin_code.clone(),
+                    folder_parent_id: folder_parent_id.clone(),
+                    expired: parse_expiry_opt(expiry.as_ref())?
+                        .and_then(|expiry| expiry.as_str().map(String::from)),
+                    ..NewResource::default()
+                };
+                let resource =
+                    passbolt_sdk::resource::create::create_resource(client, &new_resource).await?;
 
                 if json_output {
                     output::print_json(&resource)?;
                 } else {
-                    println!("Created resource: {} ({})", resource.name, resource.id);
+                    println!("Created resource: {name} ({})", resource.id);
                 }
             }
 

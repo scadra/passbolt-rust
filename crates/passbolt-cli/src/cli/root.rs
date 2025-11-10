@@ -162,25 +162,37 @@ pub struct CreateArgs {
     pub entity: CreateEntity,
 }
 
+// Parsed once per run: the size of the resource variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum CreateEntity {
     /// Create a resource (password entry)
     Resource {
+        /// Resource type slug (v5-default, v5-note, password-and-description…).
+        /// Default: from the fields given and the server's default version
+        #[arg(short = 't', long = "type")]
+        resource_type: Option<String>,
         /// Resource name
         #[arg(short = 'n', long)]
         name: String,
         /// Username / login
         #[arg(short = 'u', long)]
         username: Option<String>,
-        /// URL / URI
+        /// URL / URI; repeat for several (v5 types)
         #[arg(long)]
-        uri: Option<String>,
-        /// Password (prompt if not provided; omit for TOTP-only resources)
+        uri: Vec<String>,
+        /// Password (prompted when the type needs one and it is not given)
         #[arg(short = 'p', long)]
         password: Option<String>,
         /// Description
         #[arg(short = 'd', long)]
         description: Option<String>,
+        /// Secret note, the content of a v5-note
+        #[arg(long)]
+        note: Option<String>,
+        /// PIN code, for v5-pin-code (4 to 12 digits)
+        #[arg(long)]
+        pin_code: Option<String>,
         /// Parent folder ID
         #[arg(short = 'f', long)]
         folder_parent_id: Option<String>,
@@ -199,9 +211,6 @@ pub enum CreateEntity {
         /// TOTP period in seconds (default: 30)
         #[arg(long, default_value = "30")]
         totp_period: Option<u64>,
-        /// TOTP issuer name
-        #[arg(long)]
-        totp_issuer: Option<String>,
     },
     /// Create a folder
     Folder {
