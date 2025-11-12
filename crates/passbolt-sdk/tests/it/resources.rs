@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 
 use passbolt_sdk::resource::create::{self, NewResource};
-use passbolt_sdk::resource::update;
+use passbolt_sdk::resource::update::{self, ResourceChanges};
 use passbolt_sdk::types::Resource;
 use passbolt_sdk::{ApiError, PassboltError};
 use serde_json::{json, Value};
@@ -22,35 +22,11 @@ use crate::common::*;
 
 const PASSWORD_AND_DESCRIPTION: &str = "password-and-description";
 
-/// Fields of `update_resource` a test sets; the rest stay `None`.
-#[derive(Default)]
-struct UpdatedFields<'a> {
-    name: Option<&'a str>,
-    description: Option<&'a str>,
-    password: Option<&'a str>,
-}
-
 async fn update_resource(
     client: &Client,
-    fields: UpdatedFields<'_>,
+    changes: ResourceChanges,
 ) -> Result<Resource, PassboltError> {
-    update::update_resource(
-        client,
-        RESOURCE_ID,
-        fields.name,
-        None,
-        None,
-        fields.description,
-        fields.password,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        false,
-    )
-    .await
+    update::update_resource(client, RESOURCE_ID, &changes).await
 }
 
 async fn create_github_resource(
@@ -236,12 +212,13 @@ async fn update_password_reencrypts_for_every_user_with_direct_access() {
         r#"{"password":"old","description":"keep me"}"#,
         permissions,
     );
+    fake.on("GET", "/users.json", data::users(&["ada", "betty"]));
     let client = login_ada(&fake).await;
 
     update_resource(
         &client,
-        UpdatedFields {
-            password: Some("new"),
+        ResourceChanges {
+            password: Some("new".into()),
             ..Default::default()
         },
     )
@@ -269,8 +246,8 @@ async fn update_name_leaves_secrets_alone() {
 
     update_resource(
         &client,
-        UpdatedFields {
-            name: Some("Renamed"),
+        ResourceChanges {
+            name: Some("Renamed".into()),
             ..Default::default()
         },
     )
@@ -311,7 +288,6 @@ async fn delete_maps_a_403_to_an_api_error() {
 }
 
 #[tokio::test]
-#[ignore = "RES-3: members of a group with access do not get the new secret"]
 async fn update_password_reencrypts_for_group_members() {
     let permissions = json!([
         data::permission("p-ada", "User", ADA_ID, 15),
@@ -327,8 +303,8 @@ async fn update_password_reencrypts_for_group_members() {
 
     update_resource(
         &client,
-        UpdatedFields {
-            password: Some("new"),
+        ResourceChanges {
+            password: Some("new".into()),
             ..Default::default()
         },
     )
@@ -338,7 +314,7 @@ async fn update_password_reencrypts_for_group_members() {
     let asked_who_has_access = fake
         .requests_to("GET", "/users.json")
         .iter()
-        .any(|request| request.query.contains("has-access"));
+        .any(|request| request.query_value("filter[has-access]").as_deref() == Some(RESOURCE_ID));
     assert!(
         asked_who_has_access,
         "no GET /users.json?filter[has-access]"
@@ -347,15 +323,14 @@ async fn update_password_reencrypts_for_group_members() {
 }
 
 #[tokio::test]
-#[ignore = "RES-4: a password-string secret is rewritten as a JSON object"]
 async fn update_keeps_a_password_string_secret_as_a_string() {
     let fake = fake_serving_updatable_resource("password-string", "old", ada_owner_permissions());
     let client = login_ada(&fake).await;
 
     update_resource(
         &client,
-        UpdatedFields {
-            password: Some("new"),
+        ResourceChanges {
+            password: Some("new".into()),
             ..Default::default()
         },
     )
@@ -369,7 +344,6 @@ async fn update_keeps_a_password_string_secret_as_a_string() {
 }
 
 #[tokio::test]
-#[ignore = "RES-4: unknown secret fields (custom fields, object_type) are dropped"]
 async fn update_keeps_unknown_secret_fields() {
     let secret = r#"{"object_type":"PASSBOLT_SECRET_DATA","password":"old","custom_fields":[{"id":"c1","secret_value":"x"}]}"#;
     let fake =
@@ -378,8 +352,8 @@ async fn update_keeps_unknown_secret_fields() {
 
     update_resource(
         &client,
-        UpdatedFields {
-            password: Some("new"),
+        ResourceChanges {
+            password: Some("new".into()),
             ..Default::default()
         },
     )
@@ -393,7 +367,6 @@ async fn update_keeps_unknown_secret_fields() {
 }
 
 #[tokio::test]
-#[ignore = "RES-5: updating only the description is silently ignored"]
 async fn update_description_reencrypts_the_secret() {
     let fake = fake_serving_updatable_resource(
         PASSWORD_AND_DESCRIPTION,
@@ -404,8 +377,8 @@ async fn update_description_reencrypts_the_secret() {
 
     update_resource(
         &client,
-        UpdatedFields {
-            description: Some("new"),
+        ResourceChanges {
+            description: Some("new".into()),
             ..Default::default()
         },
     )

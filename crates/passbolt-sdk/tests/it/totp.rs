@@ -11,7 +11,7 @@
 // @since         0.1.0
 
 use passbolt_sdk::resource::create::{self, NewResource};
-use passbolt_sdk::resource::update;
+use passbolt_sdk::resource::update::{self, ResourceChanges};
 use passbolt_sdk::types::TotpData;
 use passbolt_sdk::PassboltError;
 use serde_json::{json, Value};
@@ -23,7 +23,7 @@ const PASSWORD_AND_DESCRIPTION: &str = "password-and-description";
 const SECRET_WITH_TOTP: &str = r#"{"password":"p","description":"d","totp":{"secret_key":"OLDKEY","algorithm":"SHA256","digits":8,"period":60,"issuer":"GitHub"}}"#;
 const SECRET_WITHOUT_TOTP: &str = r#"{"password":"p","description":"d"}"#;
 
-/// TOTP arguments of `update_resource` a test sets; the rest stay `None`.
+/// TOTP changes a test makes; the rest stay `None`.
 #[derive(Default)]
 struct TotpChange<'a> {
     key: Option<&'a str>,
@@ -77,24 +77,19 @@ fn fake_serving_totp_resource(slug: &str, secret: &str) -> FakePassbolt {
 
 async fn update_totp(fake: &FakePassbolt, change: TotpChange<'_>) -> Result<(), PassboltError> {
     let client = login_ada(fake).await;
-    update::update_resource(
-        &client,
-        RESOURCE_ID,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        change.key,
-        None,
-        change.digits,
-        None,
-        None,
-        change.remove,
-    )
-    .await
-    .map(drop)
+    let totp = (change.key.is_some() || change.digits.is_some()).then(|| TotpData {
+        secret_key: change.key.map(String::from),
+        digits: change.digits,
+        ..TotpData::default()
+    });
+    let changes = ResourceChanges {
+        totp,
+        remove_totp: change.remove,
+        ..ResourceChanges::default()
+    };
+    update::update_resource(&client, RESOURCE_ID, &changes)
+        .await
+        .map(drop)
 }
 
 fn updated_secret(fake: &FakePassbolt) -> Value {
@@ -214,7 +209,6 @@ async fn a_partial_totp_update_keeps_the_key() {
 }
 
 #[tokio::test]
-#[ignore = "SDK-TOTP-1: removing the TOTP keeps the password-description-totp resource type"]
 async fn removing_the_totp_switches_to_the_password_and_description_type() {
     let fake = fake_serving_totp_resource(PASSWORD_DESCRIPTION_TOTP, SECRET_WITH_TOTP);
 
@@ -235,7 +229,6 @@ async fn removing_the_totp_switches_to_the_password_and_description_type() {
 }
 
 #[tokio::test]
-#[ignore = "SDK-TOTP-1: adding a TOTP keeps the password-and-description resource type"]
 async fn adding_a_totp_switches_to_the_password_description_totp_type() {
     let fake = fake_serving_totp_resource(PASSWORD_AND_DESCRIPTION, SECRET_WITHOUT_TOTP);
 
@@ -256,7 +249,6 @@ async fn adding_a_totp_switches_to_the_password_description_totp_type() {
 }
 
 #[tokio::test]
-#[ignore = "SDK-TOTP-2: TOTP settings on a resource without TOTP are silently dropped"]
 async fn totp_settings_without_a_totp_are_refused() {
     let fake = fake_serving_totp_resource(PASSWORD_AND_DESCRIPTION, SECRET_WITHOUT_TOTP);
 

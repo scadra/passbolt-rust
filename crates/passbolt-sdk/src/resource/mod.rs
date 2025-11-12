@@ -11,6 +11,7 @@
 // @since         0.1.0
 
 pub mod create;
+mod document;
 pub mod expiry;
 pub mod filter;
 pub mod get;

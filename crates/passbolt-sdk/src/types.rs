@@ -227,7 +227,7 @@ pub struct SecretData {
     pub raw: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TotpData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<String>,
@@ -509,8 +509,15 @@ pub struct UpdateResourcePayload {
     pub resource_type_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Vec<SecretPayload>>,
+    /// `Some(Value::Null)` clears the expiry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expired: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_key_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

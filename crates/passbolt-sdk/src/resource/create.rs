@@ -16,15 +16,11 @@ use crate::client::PassboltSdk;
 use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
-use crate::metadata;
-use crate::resource::schema;
+use crate::resource::document::{self, invalid, SECRET_OBJECT_TYPE};
 use crate::types::{
     CreateResourcePayload, CustomField, Resource, ResourceIcon, ResourceType, SecretPayload,
     TotpData,
 };
-
-const METADATA_OBJECT_TYPE: &str = "PASSBOLT_RESOURCE_METADATA";
-const SECRET_OBJECT_TYPE: &str = "PASSBOLT_SECRET_DATA";
 
 /// A resource to create. Fields the resource type does not have are refused.
 #[derive(Debug, Clone, Default)]
@@ -81,15 +77,12 @@ pub async fn create_resource<H: HttpClient>(
 
     let documents = Documents::build(new_resource, &resource_type)?;
     let me = client.get_me().await?;
-    let gpgkey = me.gpg_key.as_ref();
-    let user_public_key = crypto::parse_public_key(
-        gpgkey
-            .and_then(|gpgkey| gpgkey.armored_key.as_deref())
-            .ok_or_else(|| PassboltError::NotFound("Your GPG key".into()))?,
+    let (user_public_key, _) = document::public_key_of(&me)?;
+    let secret = crypto::sign_and_encrypt(
+        &document::secret_plaintext(&documents.secret)?,
+        &[client.user_signer()],
+        &[&user_public_key],
     )?;
-    let user = client.user_signer();
-    let secret =
-        crypto::sign_and_encrypt(&documents.secret_plaintext()?, &[user], &[&user_public_key])?;
 
     let mut payload = CreateResourcePayload {
         name: None,
@@ -108,19 +101,10 @@ pub async fn create_resource<H: HttpClient>(
         metadata_key_type: None,
     };
     if resource_type.is_v5() {
-        let resource_metadata = serde_json::from_value(Value::Object(documents.resource))?;
-        let user = client.user_signer();
-        let encrypted = if settings.keys.allows_personal_keys() {
-            let gpgkey_id = gpgkey
-                .and_then(|gpgkey| gpgkey.id.as_deref())
-                .ok_or_else(|| PassboltError::NotFound("Your GPG key id".into()))?;
-            metadata::encrypt_for_user(&resource_metadata, &user, &user_public_key, gpgkey_id)?
-        } else {
-            client
-                .metadata_keys()
-                .await?
-                .encrypt(&resource_metadata, &user)?
-        };
+        let resource_metadata = document::metadata(&resource_type, &documents.resource)?;
+        let personal = settings.keys.allows_personal_keys();
+        let encrypted =
+            document::encrypt_metadata(client, &resource_metadata, personal, &me).await?;
         payload.metadata = Some(encrypted.metadata);
         payload.metadata_key_id = Some(encrypted.metadata_key_id);
         payload.metadata_key_type = Some(encrypted.metadata_key_type.into());
@@ -174,9 +158,7 @@ impl Documents {
         new_resource: &NewResource,
         resource_type: &ResourceType,
     ) -> Result<Self, PassboltError> {
-        let invalid = |reason: String| {
-            PassboltError::InvalidArgument(format!("{}: {reason}", resource_type.slug))
-        };
+        let invalid = |reason: String| invalid(resource_type, &reason);
         let mut resource = Map::new();
         let mut secret = Map::new();
         resource.insert("name".into(), new_resource.name.clone().into());
@@ -257,27 +239,8 @@ impl Documents {
             Value::Object(secret)
         };
 
-        let resource_schema = resource_type
-            .resource_schema()
-            .ok_or_else(|| invalid("this resource type is not supported".into()))?;
-        let secret_schema = resource_type
-            .secret_schema()
-            .ok_or_else(|| invalid("this resource type is not supported".into()))?;
-        schema::validate(resource_schema, &Value::Object(resource.clone())).map_err(invalid)?;
-        schema::validate(secret_schema, &secret).map_err(invalid)?;
-
-        if resource_type.is_v5() {
-            resource.insert("object_type".into(), METADATA_OBJECT_TYPE.into());
-            resource.insert("resource_type_id".into(), resource_type.id.clone().into());
-        }
+        document::validate(resource_type, &resource, &secret, &[])?;
         Ok(Self { resource, secret })
-    }
-
-    fn secret_plaintext(&self) -> Result<String, PassboltError> {
-        Ok(match &self.secret {
-            Value::String(password) => password.clone(),
-            secret => serde_json::to_string(secret)?,
-        })
     }
 }
 
