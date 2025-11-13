@@ -88,7 +88,6 @@ fn updated_uri_reads_back() {
 }
 
 #[test]
-#[ignore = "RES-5: updating only the description is silently ignored"]
 fn updated_description_reads_back() {
     let resource = create_resource(&unique_name("resource"), "p", &["--description", "before"]);
 

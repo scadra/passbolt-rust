@@ -763,38 +763,47 @@ async fn dispatch(
                 uri,
                 password,
                 description,
+                note,
+                pin_code,
                 expiry,
                 totp_key,
                 totp_algo,
                 totp_digits,
                 totp_period,
-                totp_issuer,
                 remove_totp,
             } => {
-                let expiry_value = parse_expiry_opt(expiry.as_ref())?;
+                use passbolt_sdk::resource::update::ResourceChanges;
 
-                let resource = passbolt_sdk::resource::update::update_resource(
-                    client,
-                    id,
-                    name.as_deref(),
-                    username.as_deref(),
-                    uri.as_deref(),
-                    description.as_deref(),
-                    password.as_deref(),
-                    expiry_value,
-                    totp_key.as_deref(),
-                    totp_algo.as_deref(),
-                    *totp_digits,
-                    *totp_period,
-                    totp_issuer.as_deref(),
-                    *remove_totp,
-                )
-                .await?;
+                let totp_changed = totp_key.is_some()
+                    || totp_algo.is_some()
+                    || totp_digits.is_some()
+                    || totp_period.is_some();
+                let changes = ResourceChanges {
+                    name: name.clone(),
+                    username: username.clone(),
+                    uris: (!uri.is_empty()).then(|| uri.clone()),
+                    description: description.clone(),
+                    note: note.clone(),
+                    password: password.clone(),
+                    pin_code: pin_code.clone(),
+                    totp: totp_changed.then(|| passbolt_sdk::types::TotpData {
+                        secret_key: totp_key.clone(),
+                        algorithm: totp_algo.clone(),
+                        digits: *totp_digits,
+                        period: *totp_period,
+                        issuer: None,
+                    }),
+                    remove_totp: *remove_totp,
+                    expired: parse_expiry_opt(expiry.as_ref())?
+                        .map(|expiry| expiry.as_str().map(String::from)),
+                };
+                let resource =
+                    passbolt_sdk::resource::update::update_resource(client, id, &changes).await?;
 
                 if json_output {
                     output::print_json(&resource)?;
                 } else {
-                    println!("Updated resource: {} ({})", resource.name, resource.id);
+                    println!("Updated resource: {}", resource.id);
                 }
             }
 
