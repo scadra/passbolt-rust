@@ -378,12 +378,19 @@ pub enum UpdateEntity {
         name: Option<String>,
         #[arg(short = 'u', long)]
         username: Option<String>,
+        /// URL / URI; repeat for several (v5 types), replaces the current ones
         #[arg(long)]
-        uri: Option<String>,
+        uri: Vec<String>,
         #[arg(short = 'p', long)]
         password: Option<String>,
         #[arg(short = 'd', long)]
         description: Option<String>,
+        /// Secret note (v5 types)
+        #[arg(long)]
+        note: Option<String>,
+        /// PIN code, for v5-pin-code (4 to 12 digits)
+        #[arg(long)]
+        pin_code: Option<String>,
         #[arg(long)]
         expiry: Option<String>,
         /// TOTP secret key (base32); adds/replaces TOTP for this resource
@@ -398,9 +405,6 @@ pub enum UpdateEntity {
         /// TOTP period in seconds
         #[arg(long)]
         totp_period: Option<u64>,
-        /// TOTP issuer name
-        #[arg(long)]
-        totp_issuer: Option<String>,
         /// Remove TOTP from this resource
         #[arg(long)]
         remove_totp: bool,

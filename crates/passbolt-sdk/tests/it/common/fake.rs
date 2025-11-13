@@ -286,7 +286,10 @@ impl FakePassbolt {
             ("POST", "/auth/login.json") => self.gpgauth_login(&body),
             ("POST", "/mfa/verify/totp.json") => self.verify_totp(&body),
             ("POST", "/resources.json") => self
-                .refuse_resource(&body)
+                .refuse_resource(&body, path, true)
+                .unwrap_or_else(|| self.canned_response(method, path)),
+            ("PUT", _) if path.starts_with("/resources/") => self
+                .refuse_resource(&body, path, false)
                 .unwrap_or_else(|| self.canned_response(method, path)),
             _ if self.mfa_pending()
                 && !MFA_WHITELIST.iter().any(|prefix| path.starts_with(prefix)) =>
@@ -330,21 +333,21 @@ impl FakePassbolt {
     }
 
     /// The 400 of `MetadataResourceDto`, `MetadataSettingsAwareTrait` and `ResourcesTable` v5 rules.
-    fn refuse_resource(&self, body: &Value) -> Option<HttpResponse> {
-        const URL: &str = "/resources.json";
-        let refuse = |message: &str, errors: Value| Some(json_response(400, message, URL, &errors));
+    fn refuse_resource(&self, body: &Value, url: &str, creating: bool) -> Option<HttpResponse> {
+        let refuse = |message: &str, errors: Value| Some(json_response(400, message, url, &errors));
         let present = |field: &str| !body[field].is_null();
         let v5_fields = ["metadata", "metadata_key_id", "metadata_key_type"];
         let settings = self.state.lock().unwrap().metadata_types_settings.clone();
 
         if !v5_fields.into_iter().any(present) {
-            let refused = settings
-                .is_some_and(|settings| settings["allow_creation_of_v4_resources"] == false);
+            let refused = creating
+                && settings
+                    .is_some_and(|settings| settings["allow_creation_of_v4_resources"] == false);
             return refused.then(|| {
                 json_response(
                     400,
                     "Resource creation with cleartext metadata not allowed.",
-                    URL,
+                    url,
                     &Value::Null,
                 )
             });
@@ -375,7 +378,7 @@ impl FakePassbolt {
             .map(|resource_type| resource_type["slug"].as_str().unwrap().to_string());
         let errors = if !slug.as_deref().is_some_and(|slug| slug.starts_with("v5-")) {
             json!({"resource_type_id": {"inList": "The resource type should be one of the following: v5 types."}})
-        } else if slug.as_deref() == Some("v5-password-string") {
+        } else if creating && slug.as_deref() == Some("v5-password-string") {
             json!({"resource_type_id": {"isNotV5PasswordStringType": "It is not allowed to create v5-password-string resource types."}})
         } else if !["user_key", "shared_key"]
             .contains(&body["metadata_key_type"].as_str().unwrap_or_default())

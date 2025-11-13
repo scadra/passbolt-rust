@@ -124,7 +124,6 @@ fn v5_password_string_cannot_be_created() {
 }
 
 #[test]
-#[ignore = "V5-13: updating a v5 resource sends v4 fields instead of re-encrypting the metadata"]
 fn v5_updated_password_reads_back() {
     let resource = create_resource(&unique_name("v5"), "first", &["--type", "v5-default"]);
 

@@ -31,3 +31,4 @@ mod security;
 mod sharing;
 mod totp;
 mod transport;
+mod update_v5;

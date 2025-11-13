@@ -114,11 +114,33 @@ pub fn secret_v5_default() -> Value {
 
 /// v5 resource whose `metadata` is encrypted for `key`.
 pub fn resource_v5(metadata: &Value, key: &TestKey, key_type: &str, key_id: &str) -> Resource {
+    serde_json::from_value(resource_v5_value(metadata, key, key_type, key_id)).unwrap()
+}
+
+fn resource_v5_value(metadata: &Value, key: &TestKey, key_type: &str, key_id: &str) -> Value {
     let mut resource = fixture!("resource_v5.json");
     resource["metadata"] = key.encrypt(&metadata.to_string()).into();
     resource["metadata_key_type"] = key_type.into();
     resource["metadata_key_id"] = key_id.into();
-    serde_json::from_value(resource).unwrap()
+    if let Some(resource_type_id) = metadata["resource_type_id"].as_str() {
+        resource["resource_type_id"] = resource_type_id.into();
+    }
+    resource
+}
+
+/// v5 resource of type `slug`, its metadata encrypted for `key`, its secret for ada.
+pub fn resource_v5_with_secret(
+    slug: &str,
+    metadata: &Value,
+    (key, key_type, key_id): (&TestKey, &str, &str),
+    secret: &str,
+) -> Value {
+    let mut metadata = metadata.clone();
+    metadata["resource_type_id"] = resource_type_id(slug).into();
+    let mut resource = resource_v5_value(&metadata, key, key_type, key_id);
+    resource["secrets"] =
+        json!([{ "user_id": ADA_ID, "resource_id": RESOURCE_ID, "data": ADA.encrypt(secret) }]);
+    resource
 }
 
 /// Decrypted `metadata_private_keys[].data`, as the server stores it.

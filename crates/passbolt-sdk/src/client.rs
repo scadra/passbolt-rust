@@ -773,6 +773,21 @@ impl<H: HttpClient> PassboltSdk<H> {
         &self,
         resource: &Resource,
     ) -> Result<SecretData, PassboltError> {
+        self.decrypt_resource_secret_text(resource)
+            .await?
+            .map_or_else(
+                || Ok(SecretData::default()),
+                |text| parse_secret(text.into_bytes()),
+            )
+    }
+
+    /// The decrypted secret as written: the password of `password-string` types, JSON otherwise.
+    ///
+    /// `None` when the resource has no secret for the user.
+    pub async fn decrypt_resource_secret_text(
+        &self,
+        resource: &Resource,
+    ) -> Result<Option<String>, PassboltError> {
         let secret_data = if let Some(secret) = resource.secrets.first() {
             secret.data.clone().unwrap_or_default()
         } else {
@@ -789,7 +804,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         };
 
         if secret_data.is_empty() {
-            return Ok(SecretData::default());
+            return Ok(None);
         }
 
         let plaintext = crypto::decrypt_message(
@@ -798,8 +813,9 @@ impl<H: HttpClient> PassboltSdk<H> {
             self.passphrase.expose_secret(),
         )
         .map_err(|error| CryptoError::Decrypt(format!("resource secret: {error}")))?;
-
-        parse_secret(plaintext)
+        String::from_utf8(plaintext)
+            .map(Some)
+            .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))
     }
 
     /// The user's key, to sign what the user encrypts.
