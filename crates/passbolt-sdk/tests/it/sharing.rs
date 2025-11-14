@@ -31,11 +31,6 @@ fn group_path() -> String {
 fn fake_serving_shareable_resource(secret: &str, permissions: Value) -> FakePassbolt {
     let fake = fake_serving_resource("password-and-description", secret, permissions);
     fake.on("PUT", &share_path(), Value::Null);
-    fake.on(
-        "POST",
-        &format!("/share/simulate/resource/{RESOURCE_ID}.json"),
-        data::share_simulate(),
-    );
     fake
 }
 
@@ -179,21 +174,20 @@ async fn create_user_with_an_unknown_role_fails_before_posting() {
 }
 
 #[tokio::test]
-#[ignore = "SHR-1: sharing with a group does not encrypt the secret for its members"]
 async fn share_with_a_group_encrypts_for_the_members_who_gain_access() {
     let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, ada_owner_permissions());
     let client = login_ada(&fake).await;
 
     share_with(&client, &[], &[GROUP_ID], 1).await.unwrap();
 
+    // Ada, the other member, already has access.
     assert_eq!(
         secret_user_ids(&fake.body_of("PUT", &share_path())),
-        BTreeSet::from([CAROL_ID])
+        BTreeSet::from([BETTY_ID])
     );
 }
 
 #[tokio::test]
-#[ignore = "SHR-2: sharing with a user who already has access creates a duplicate permission"]
 async fn share_updates_an_existing_permission() {
     let fake = fake_serving_shareable_resource(
         r#"{"password":"p"}"#,
@@ -215,7 +209,6 @@ async fn share_updates_an_existing_permission() {
 }
 
 #[tokio::test]
-#[ignore = "SHR-3: the shared secret is re-serialized, a password-string secret becomes JSON"]
 async fn share_keeps_the_secret_unchanged() {
     let fake = fake_serving_resource("password-string", "raw-password", ada_owner_permissions());
     fake.on("PUT", &share_path(), Value::Null);
@@ -286,4 +279,75 @@ async fn update_user_resolves_the_role_name() {
         fake.body_of("PUT", &format!("/users/{BETTY_ID}.json"))["role_id"],
         data::role_id("admin")
     );
+}
+
+#[tokio::test]
+async fn sharing_personal_v5_metadata_moves_it_to_the_shared_key_first() {
+    let fake = FakePassbolt::new();
+    fake.with_directory();
+    fake.with_metadata_settings(
+        data::metadata_types_settings(),
+        data::metadata_keys_settings(),
+    );
+    fake.on(
+        "GET",
+        "/metadata/keys.json",
+        data::metadata_keys(&[("mk1", &METADATA)]),
+    );
+    let resource = data::resource_v5_with_secret(
+        "v5-default",
+        &data::metadata("GitHub"),
+        (&ADA, "user_key", "8b6c3a10-0000-4000-8000-000000008888"),
+        r#"{"object_type":"PASSBOLT_SECRET_DATA","password":"p"}"#,
+    );
+    fake.on("GET", &resource_path(), resource.clone());
+    fake.on("PUT", &resource_path(), resource);
+    fake.on(
+        "GET",
+        &format!("/permissions/resource/{RESOURCE_ID}.json"),
+        ada_owner_permissions(),
+    );
+    fake.on("PUT", &share_path(), Value::Null);
+    let client = login_ada(&fake).await;
+
+    share_with(&client, &[BETTY_ID], &[], 1).await.unwrap();
+
+    let update = fake.body_of("PUT", &resource_path());
+    assert_eq!(
+        (&update["metadata_key_type"], &update["metadata_key_id"]),
+        (&json!("shared_key"), &json!("mk1"))
+    );
+    assert!(METADATA
+        .decrypt(update["metadata"].as_str().unwrap())
+        .contains(r#""name":"GitHub""#));
+    assert_eq!(
+        secret_user_ids(&fake.body_of("PUT", &share_path())),
+        BTreeSet::from([BETTY_ID])
+    );
+}
+
+#[tokio::test]
+async fn sharing_like_a_folder_adds_its_permissions() {
+    let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, ada_owner_permissions());
+    fake.on(
+        "GET",
+        &format!("/folders/{FOLDER_ID}.json"),
+        data::folder(json!([
+            data::permission("f-ada", "User", ADA_ID, 15),
+            data::permission("f-ops", "Group", GROUP_ID, 7)
+        ])),
+    );
+    let client = login_ada(&fake).await;
+
+    share::share_like_folder(&client, RESOURCE_ID, FOLDER_ID)
+        .await
+        .unwrap();
+
+    let body = fake.body_of("PUT", &share_path());
+    assert_eq!(
+        body["permissions"],
+        json!([{ "aro": "Group", "aro_foreign_key": GROUP_ID, "type": 7 }]),
+        "ada is already owner"
+    );
+    assert_eq!(secret_user_ids(&body), BTreeSet::from([BETTY_ID]));
 }

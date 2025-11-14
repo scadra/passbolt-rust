@@ -288,9 +288,18 @@ impl FakePassbolt {
             ("POST", "/resources.json") => self
                 .refuse_resource(&body, path, true)
                 .unwrap_or_else(|| self.canned_response(method, path)),
-            ("PUT", _) if path.starts_with("/resources/") => self
-                .refuse_resource(&body, path, false)
+            ("POST", _) if path.starts_with("/share/simulate/resource/") => {
+                self.simulate_share(path, &body)
+            }
+            ("PUT", _) if path.starts_with("/share/resource/") => self
+                .refuse_share(path)
                 .unwrap_or_else(|| self.canned_response(method, path)),
+            ("PUT", _) if path.starts_with("/resources/") => {
+                self.refuse_resource(&body, path, false).unwrap_or_else(|| {
+                    self.store_metadata(path, &body);
+                    self.canned_response(method, path)
+                })
+            }
             _ if self.mfa_pending()
                 && !MFA_WHITELIST.iter().any(|prefix| path.starts_with(prefix)) =>
             {
@@ -388,6 +397,94 @@ impl FakePassbolt {
             return None;
         };
         refuse("Could not validate resource data.", errors)
+    }
+
+    /// `ShareController::dryRun`: the users who gain or lose access, group members included.
+    fn simulate_share(&self, path: &str, body: &Value) -> HttpResponse {
+        if let Some(refused) = self.refuse_share(path) {
+            return refused;
+        }
+        let resource_id = path
+            .trim_start_matches("/share/simulate/resource/")
+            .trim_end_matches(".json");
+        let mut permissions = self.permissions_of(resource_id);
+        let before = users_with_access(&permissions);
+        for change in body["permissions"].as_array().into_iter().flatten() {
+            let existing = permissions.iter().position(|permission| {
+                change["id"].is_string() && permission["id"] == change["id"]
+            });
+            match (existing, change["delete"] == true) {
+                (Some(index), true) => {
+                    permissions.remove(index);
+                }
+                (Some(index), false) => permissions[index]["type"] = change["type"].clone(),
+                (None, _) => permissions.push(change.clone()),
+            }
+        }
+        let after = users_with_access(&permissions);
+        let as_users = |user_ids: Vec<&String>| {
+            user_ids
+                .into_iter()
+                .map(|user_id| json!({"User": {"id": user_id}}))
+                .collect::<Vec<_>>()
+        };
+        json_response(
+            200,
+            "The operation was successful.",
+            path,
+            &json!({"changes": {
+                "added": as_users(after.difference(&before).collect()),
+                "removed": as_users(before.difference(&after).collect()),
+            }}),
+        )
+    }
+
+    /// `ShareController`: a resource with personal metadata cannot be shared.
+    fn refuse_share(&self, path: &str) -> Option<HttpResponse> {
+        let resource_id = path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(".json");
+        let resource = self.route_body("GET", &format!("/resources/{resource_id}.json"))?;
+        (resource["metadata"].is_string() && resource["metadata_key_type"] == "user_key").then(
+            || {
+                json_response(
+                    400,
+                    "Resource metadata key type is invalid.",
+                    path,
+                    &Value::Null,
+                )
+            },
+        )
+    }
+
+    /// Later GETs of the resource return the v5 metadata it was updated with.
+    fn store_metadata(&self, path: &str, body: &Value) {
+        let Some(mut resource) = self.route_body("GET", path) else {
+            return;
+        };
+        for field in ["metadata", "metadata_key_id", "metadata_key_type"] {
+            if !body[field].is_null() {
+                resource[field] = body[field].clone();
+            }
+        }
+        self.on("GET", path, resource);
+    }
+
+    fn permissions_of(&self, resource_id: &str) -> Vec<Value> {
+        self.route_body("GET", &format!("/permissions/resource/{resource_id}.json"))
+            .and_then(|permissions| permissions.as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    fn route_body(&self, method: &str, path: &str) -> Option<Value> {
+        let state = self.state.lock().unwrap();
+        state
+            .routes
+            .iter()
+            .find(|route| route.method == method && route.path == path)
+            .map(|route| route.body.clone())
     }
 
     fn mfa_pending(&self) -> bool {
@@ -617,4 +714,25 @@ impl HttpClient for FakePassbolt {
     ) -> Result<HttpResponse, TransportError> {
         Ok(self.handle("DELETE", url, headers, Some(body)))
     }
+}
+
+/// Users given access by `permissions`: the users, and the members of the groups.
+fn users_with_access(permissions: &[Value]) -> std::collections::BTreeSet<String> {
+    let group = data::group();
+    permissions
+        .iter()
+        .flat_map(|permission| {
+            let aro_id = permission["aro_foreign_key"].as_str().unwrap_or_default();
+            if permission["aro"] == "Group" && group["id"] == aro_id {
+                group["groups_users"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|membership| membership["user_id"].as_str().unwrap().to_string())
+                    .collect()
+            } else {
+                vec![aro_id.to_string()]
+            }
+        })
+        .collect()
 }
