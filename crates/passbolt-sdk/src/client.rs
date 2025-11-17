@@ -707,8 +707,15 @@ impl<H: HttpClient> PassboltSdk<H> {
             ("contain[favorite]", "1".into()),
         ];
 
-        for group_id in options.group_ids {
-            params.push(("filter[is-shared-with-group][]", group_id));
+        // The server filters on one group: `filter[is-shared-with-group]` is not a list.
+        match <[String; 1]>::try_from(options.group_ids) {
+            Ok([group_id]) => params.push(("filter[is-shared-with-group]", group_id)),
+            Err(group_ids) if group_ids.is_empty() => {}
+            Err(_) => {
+                return Err(PassboltError::InvalidArgument(
+                    "Resources can be filtered on one group only".into(),
+                ))
+            }
         }
         for folder_id in options.folder_ids {
             params.push(("filter[has-parent][]", folder_id));
@@ -826,7 +833,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         }
     }
 
-    /// Encrypt a secret for the given user IDs.
+    /// Encrypt a secret for the given user IDs, signed by the user.
     pub async fn encrypt_secret_for_users(
         &self,
         secret_json: &str,
@@ -848,7 +855,8 @@ impl<H: HttpClient> PassboltSdk<H> {
                 .ok_or_else(|| PassboltError::NotFound(format!("User {user_id} has no GPG key")))?;
 
             let public_key = crypto::parse_public_key(armored_key)?;
-            let encrypted = crypto::encrypt_message(secret_json.as_bytes(), &[&public_key])?;
+            let encrypted =
+                crypto::sign_and_encrypt(secret_json, &[self.user_signer()], &[&public_key])?;
 
             payloads.push(SecretPayload {
                 user_id: user_id.clone(),
@@ -1045,6 +1053,26 @@ impl<H: HttpClient> PassboltSdk<H> {
             .put_request(&format!("/share/resource/{id}.json"), &body)
             .await?;
         Ok(())
+    }
+
+    /// `POST /share/simulate/resource/{id}.json`: the users who would gain access.
+    pub async fn simulate_share_resource(
+        &self,
+        id: &str,
+        permissions: &[ShareChange],
+    ) -> Result<Vec<String>, PassboltError> {
+        let id = uuid_segment(id)?;
+        let body = serde_json::json!({ "permissions": permissions });
+        let simulation: Value = self
+            .post(&format!("/share/simulate/resource/{id}.json"), &body)
+            .await?;
+        Ok(simulation
+            .pointer("/changes/added")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|added| added.pointer("/User/id")?.as_str().map(String::from))
+            .collect())
     }
 
     pub async fn share_folder(

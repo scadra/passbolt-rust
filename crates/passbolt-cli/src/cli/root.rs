@@ -522,6 +522,9 @@ pub enum MoveEntity {
         /// Target folder ID (empty = root)
         #[arg(short = 'f', long)]
         folder_parent_id: Option<String>,
+        /// Also give the resource the target folder's permissions, as the browser extension offers
+        #[arg(long, requires = "folder_parent_id")]
+        with_folder_permissions: bool,
     },
     Folder {
         #[arg(long)]

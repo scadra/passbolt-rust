@@ -210,10 +210,6 @@ pub fn group_dry_run(secret: &str) -> Value {
     dry_run
 }
 
-pub fn share_simulate() -> Value {
-    fixture!("share_simulate.json")
-}
-
 pub fn mfa_error() -> Value {
     fixture!("mfa_error.json")
 }

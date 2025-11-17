@@ -910,10 +910,14 @@ async fn dispatch(
             MoveEntity::Resource {
                 id,
                 folder_parent_id,
+                with_folder_permissions,
             } => {
                 client
                     .move_resource(id, folder_parent_id.as_deref())
                     .await?;
+                if let (true, Some(folder_id)) = (*with_folder_permissions, folder_parent_id) {
+                    passbolt_sdk::resource::share::share_like_folder(client, id, folder_id).await?;
+                }
                 println!("Moved resource {id}");
             }
             MoveEntity::Folder {
