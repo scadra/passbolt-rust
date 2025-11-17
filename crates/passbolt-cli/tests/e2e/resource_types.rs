@@ -11,7 +11,8 @@
 // @since         0.1.0
 
 use crate::common::{
-    create_resource, ids, run, run_json, share_with_user_id, unique_name, Cleanup,
+    admin_id, create_folder, create_resource, ids, run, run_json, run_json_as, share_with_user_id,
+    unique_name, Cleanup, ADMIN,
 };
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
@@ -143,7 +144,6 @@ fn v5_updated_password_reads_back() {
 }
 
 #[test]
-#[ignore = "V5-19: personal v5 metadata must be re-encrypted with the shared key before sharing"]
 fn v5_personal_resource_can_be_shared() {
     let resource = create_resource(&unique_name("v5"), "p", &["--type", "v5-default"]);
 
@@ -168,4 +168,59 @@ fn v5_resource_is_found_by_name() {
     let found = run_json(&["list", "resource", "--search", &name]);
 
     assert_eq!(ids(&found), [resource.id.as_str()]);
+}
+
+#[test]
+fn v5_personal_resource_shared_with_a_user_reads_back_for_them() {
+    let name = unique_name("v5");
+    let resource = create_resource(&name, "shared-password", &["--type", "v5-default"]);
+
+    run(&[
+        "share",
+        "resource",
+        "--id",
+        &resource.id,
+        "--type",
+        "1",
+        "--user",
+        &admin_id(),
+    ]);
+
+    let as_recipient = run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
+    assert_eq!(as_recipient["name"], name.as_str());
+    assert_eq!(as_recipient["password"], "shared-password");
+    assert_eq!(as_recipient["metadata_key_type"], "shared_key");
+}
+
+#[test]
+fn moving_with_the_folder_permissions_shares_like_the_folder() {
+    let folder = create_folder(&unique_name("shared-folder"), &[]);
+    run(&[
+        "share",
+        "folder",
+        "--id",
+        &folder.id,
+        "--type",
+        "1",
+        "--user",
+        &admin_id(),
+    ]);
+    let resource = create_resource(
+        &unique_name("v5"),
+        "folder-password",
+        &["--type", "v5-default"],
+    );
+
+    run(&[
+        "move",
+        "resource",
+        "--id",
+        &resource.id,
+        "--folder-parent-id",
+        &folder.id,
+        "--with-folder-permissions",
+    ]);
+
+    let as_recipient = run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
+    assert_eq!(as_recipient["password"], "folder-password");
 }

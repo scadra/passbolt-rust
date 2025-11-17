@@ -79,7 +79,6 @@ fn revoked_resource_permission_is_gone() {
 }
 
 #[test]
-#[ignore = "SHR-2: sharing with a user who already has access creates a duplicate permission"]
 fn resharing_changes_the_permission_type() {
     let recipient = share_with_user_id();
     let resource = create_resource(&unique_name("shared"), "p", &[]);
@@ -136,7 +135,6 @@ fn folder_shared_with_a_group_grants_the_permission() {
 }
 
 #[test]
-#[ignore = "SHR-1: sharing with a group does not encrypt the secret for its members"]
 fn resource_shared_with_a_group_grants_the_permission() {
     let group = create_group(&unique_name("group"), &admin_id(), &[]);
     let resource = create_resource(&unique_name("shared"), "p", &[]);
@@ -157,7 +155,6 @@ fn resource_shared_with_a_group_grants_the_permission() {
 }
 
 #[test]
-#[ignore = "SHR-1: sharing with a group does not encrypt the secret for its members"]
 fn resource_shared_with_a_group_is_listed_by_group() {
     let group = create_group(&unique_name("group"), &admin_id(), &[]);
     let resource = create_resource(&unique_name("shared"), "p", &[]);
