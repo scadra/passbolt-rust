@@ -447,7 +447,7 @@ async fn get_resources_sends_every_filter() {
         .get_resources(ResourceQuery {
             favorites_only: true,
             owned_by_me: true,
-            group_ids: vec![GROUP_ID.into(), "other-group".into()],
+            group_ids: vec![GROUP_ID.into()],
             folder_ids: vec![FOLDER_ID.into()],
             search: Some("git".into()),
             ..Default::default()
@@ -457,8 +457,10 @@ async fn get_resources_sends_every_filter() {
 
     let request = single_request(&fake, "GET", "/resources.json");
     assert_eq!(
-        request.query_values("filter[is-shared-with-group][]"),
-        [GROUP_ID, "other-group"]
+        request
+            .query_value("filter[is-shared-with-group]")
+            .as_deref(),
+        Some(GROUP_ID)
     );
     assert_eq!(request.query_values("filter[has-parent][]"), [FOLDER_ID]);
     assert_eq!(
@@ -473,4 +475,23 @@ async fn get_resources_sends_every_filter() {
         request.query_value("filter[search]").as_deref(),
         Some("git")
     );
+}
+
+#[tokio::test]
+async fn get_resources_filters_on_one_group_only() {
+    let (fake, client) = logged_in_with("GET", "/resources.json", json!([])).await;
+
+    let error = client
+        .get_resources(ResourceQuery {
+            group_ids: vec![GROUP_ID.into(), GROUP_ID.into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, PassboltError::InvalidArgument(_)),
+        "{error:?}"
+    );
+    assert!(fake.requests_to("GET", "/resources.json").is_empty());
 }

@@ -707,8 +707,15 @@ impl<H: HttpClient> PassboltSdk<H> {
             ("contain[favorite]", "1".into()),
         ];
 
-        for group_id in options.group_ids {
-            params.push(("filter[is-shared-with-group][]", group_id));
+        // The server filters on one group: `filter[is-shared-with-group]` is not a list.
+        match <[String; 1]>::try_from(options.group_ids) {
+            Ok([group_id]) => params.push(("filter[is-shared-with-group]", group_id)),
+            Err(group_ids) if group_ids.is_empty() => {}
+            Err(_) => {
+                return Err(PassboltError::InvalidArgument(
+                    "Resources can be filtered on one group only".into(),
+                ))
+            }
         }
         for folder_id in options.folder_ids {
             params.push(("filter[has-parent][]", folder_id));
