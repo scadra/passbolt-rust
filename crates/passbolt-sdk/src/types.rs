@@ -145,7 +145,8 @@ pub struct ResourceMetadata {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<ResourceIcon>,
+    /// `{type, value, background_color}`, every field optional; kept as written.
+    pub icon: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_fields: Option<Vec<CustomField>>,
     /// Fields this SDK does not know, kept so that an update writes them back.
@@ -159,17 +160,6 @@ impl ResourceMetadata {
     pub fn uri(&self) -> Option<&str> {
         self.uris.first().map(String::as_str)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResourceIcon {
-    /// `keepass-icon-set` or `passbolt-icon-set`.
-    #[serde(rename = "type")]
-    pub icon_set: String,
-    #[serde(default)]
-    pub value: Option<u32>,
-    #[serde(default)]
-    pub background_color: Option<String>,
 }
 
 /// One side of a custom field: the metadata holds `metadata_*`, the secret `secret_*`.

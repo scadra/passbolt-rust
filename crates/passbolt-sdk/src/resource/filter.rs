@@ -10,38 +10,12 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use std::collections::HashMap;
-
 use crate::filter::{filter_entities, Filter};
-use crate::types::Resource;
+use crate::resource::view::ResourceView;
 
-#[must_use]
-pub fn resource_fields(resource: &Resource) -> HashMap<String, String> {
-    let mut fields = HashMap::new();
-    fields.insert("id".into(), resource.id.clone());
-    fields.insert("name".into(), resource.name.clone());
-    fields.insert(
-        "username".into(),
-        resource.username.clone().unwrap_or_default(),
-    );
-    fields.insert("uri".into(), resource.uri.clone().unwrap_or_default());
-    fields.insert(
-        "description".into(),
-        resource.description.clone().unwrap_or_default(),
-    );
-    fields.insert(
-        "folder_parent_id".into(),
-        resource.folder_parent_id.clone().unwrap_or_default(),
-    );
-    fields.insert(
-        "resource_type_id".into(),
-        resource.resource_type_id.clone().unwrap_or_default(),
-    );
-    fields
-}
-
-pub fn filter_resources(resources: Vec<Resource>, filters: &[Filter]) -> Vec<Resource> {
-    filter_entities(resources, filters, resource_fields)
+/// The resources whose decrypted fields match every filter.
+pub fn filter_resources(resources: Vec<ResourceView>, filters: &[Filter]) -> Vec<ResourceView> {
+    filter_entities(resources, filters, ResourceView::fields)
 }
 
 #[cfg(test)]
@@ -50,13 +24,15 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::types::Resource;
 
-    fn resource(value: serde_json::Value) -> Resource {
-        serde_json::from_value(value).unwrap()
+    fn view(value: serde_json::Value) -> ResourceView {
+        let resource: Resource = serde_json::from_value(value).unwrap();
+        ResourceView::new(resource, None, &[]).unwrap()
     }
 
-    fn github() -> Resource {
-        resource(json!({
+    fn github() -> ResourceView {
+        view(json!({
             "id": "r1",
             "name": "GitHub",
             "username": "ada",
@@ -76,7 +52,7 @@ mod tests {
     #[case::folder_parent_id("folder_parent_id", "f1")]
     #[case::resource_type_id("resource_type_id", "t1")]
     fn test_resource_fields(#[case] field: &str, #[case] expected: &str) {
-        assert_eq!(resource_fields(&github())[field], expected);
+        assert_eq!(github().fields()[field], expected);
     }
 
     #[rstest]
@@ -85,15 +61,16 @@ mod tests {
     #[case::description("description")]
     #[case::folder_parent_id("folder_parent_id")]
     #[case::resource_type_id("resource_type_id")]
+    #[case::password("password")]
     fn test_resource_fields_missing_value_is_empty(#[case] field: &str) {
-        let fields = resource_fields(&resource(json!({ "id": "r2", "name": "Bare" })));
+        let fields = view(json!({ "id": "r2", "name": "Bare" })).fields();
 
         assert_eq!(fields[field], "");
     }
 
     #[test]
     fn test_filter_resources_by_field() {
-        let bare = resource(json!({ "id": "r2", "name": "Bare" }));
+        let bare = view(json!({ "id": "r2", "name": "Bare" }));
         let filter = Filter::parse("username=ada").unwrap();
 
         let resources = filter_resources(vec![github(), bare], &[filter]);

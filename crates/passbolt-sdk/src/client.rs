@@ -616,57 +616,88 @@ impl<H: HttpClient> PassboltSdk<H> {
         resources: &[Resource],
         workers: usize,
     ) -> Result<HashMap<String, SecretData>, PassboltError> {
-        use tokio::task::JoinSet;
+        let texts = self.decrypt_secret_texts_batch(resources, workers).await?;
+        resources
+            .iter()
+            .map(|resource| {
+                let secret = match texts.get(&resource.id) {
+                    Some(text) => parse_secret(text.clone().into_bytes())?,
+                    None => SecretData::default(),
+                };
+                Ok((resource.id.clone(), secret))
+            })
+            .collect()
+    }
 
-        let concurrency = if workers == 0 {
-            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
-        } else {
-            workers
-        }
-        .max(1);
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let pgp_key = Arc::new(self.private_key.key.clone());
+    /// The decrypted secrets of `resources` by resource id, as written; resources without a
+    /// secret for the user are left out. Decrypted in parallel on `workers` threads (0: one per CPU).
+    pub async fn decrypt_secret_texts_batch(
+        &self,
+        resources: &[Resource],
+        workers: usize,
+    ) -> Result<HashMap<String, String>, PassboltError> {
+        let encrypted_secrets: Vec<(String, String)> = resources
+            .iter()
+            .filter_map(|resource| {
+                let encrypted = resource.secrets.first()?.data.clone()?;
+                (!encrypted.is_empty()).then(|| (resource.id.clone(), encrypted))
+            })
+            .collect();
+        let key = Arc::new(self.private_key.key.clone());
         let passphrase = Arc::new(self.passphrase.clone());
+        let decrypt = move |id: String, encrypted: String| {
+            let plaintext = crypto::decrypt_message(&encrypted, &key, passphrase.expose_secret())
+                .map_err(|error| {
+                CryptoError::Decrypt(format!("resource {id} secret: {error}"))
+            })?;
+            let text = String::from_utf8(plaintext).map_err(|error| {
+                PassboltError::Other(format!(
+                    "Secret of resource {id} is not valid UTF-8: {error}"
+                ))
+            })?;
+            Ok::<_, PassboltError>((id, text))
+        };
 
-        let mut tasks: JoinSet<Result<(String, SecretData), PassboltError>> = JoinSet::new();
+        #[cfg(feature = "native")]
+        {
+            use tokio::task::JoinSet;
 
-        for resource in resources {
-            let encrypted = resource
-                .secrets
-                .first()
-                .and_then(|secret| secret.data.clone())
-                .unwrap_or_default();
-            let id = resource.id.clone();
-            let key = Arc::clone(&pgp_key);
-            let task_passphrase = Arc::clone(&passphrase);
-            let permit = Arc::clone(&semaphore)
-                .acquire_owned()
-                .await
-                .map_err(|error| PassboltError::Other(format!("Semaphore error: {error}")))?;
-
-            tasks.spawn_blocking(move || {
-                let _permit = permit;
-                if encrypted.is_empty() {
-                    return Ok((id, SecretData::default()));
-                }
-                let plaintext =
-                    crypto::decrypt_message(&encrypted, &key, task_passphrase.expose_secret())
-                        .map_err(|error| {
-                            CryptoError::Decrypt(format!("resource {id} secret: {error}"))
-                        })?;
-                Ok((id, parse_secret(plaintext)?))
-            });
+            let concurrency = if workers == 0 {
+                std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
+            } else {
+                workers
+            };
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+            let decrypt = Arc::new(decrypt);
+            let mut tasks = JoinSet::new();
+            for (id, encrypted) in encrypted_secrets {
+                let permit = Arc::clone(&semaphore)
+                    .acquire_owned()
+                    .await
+                    .map_err(|error| PassboltError::Other(format!("Semaphore error: {error}")))?;
+                let decrypt = Arc::clone(&decrypt);
+                tasks.spawn_blocking(move || {
+                    let _permit = permit;
+                    decrypt(id, encrypted)
+                });
+            }
+            let mut texts = HashMap::new();
+            while let Some(result) = tasks.join_next().await {
+                let (id, text) = result.map_err(|error| {
+                    PassboltError::Other(format!("Decryption task failed: {error}"))
+                })??;
+                texts.insert(id, text);
+            }
+            Ok(texts)
         }
-
-        let mut secrets = HashMap::new();
-        while let Some(result) = tasks.join_next().await {
-            let (id, secret) = result.map_err(|error| {
-                PassboltError::Other(format!("Decryption task failed: {error}"))
-            })??;
-            secrets.insert(id, secret);
+        #[cfg(not(feature = "native"))]
+        {
+            let _ = workers;
+            encrypted_secrets
+                .into_iter()
+                .map(|(id, encrypted)| decrypt(id, encrypted))
+                .collect()
         }
-
-        Ok(secrets)
     }
 
     /// Decrypt the metadata of the v5 resources among `resources`, by resource id.

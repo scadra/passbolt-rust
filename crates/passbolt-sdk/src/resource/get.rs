@@ -16,6 +16,7 @@ use anyhow::Result;
 
 use crate::client::PassboltSdk;
 use crate::http::HttpClient;
+use crate::resource::view::ResourceView;
 use crate::types::{Permission, Resource, SecretData};
 
 /// Fetch a resource by ID.
@@ -29,6 +30,22 @@ pub async fn get_resource_secret<H: HttpClient>(
     resource: &Resource,
 ) -> Result<SecretData> {
     Ok(client.decrypt_resource_secret(resource).await?)
+}
+
+/// Fetch a resource with its v5 metadata and its secret decrypted.
+pub async fn get_resource_view<H: HttpClient>(
+    client: &PassboltSdk<H>,
+    id: &str,
+) -> Result<ResourceView> {
+    let resource = client.get_resource(id).await?;
+    let metadata = client.decrypt_resource_metadata(&resource).await?;
+    let secret = client.decrypt_resource_secret_text(&resource).await?;
+    let resource_types = client.resource_types().await?;
+    let view = ResourceView::new(resource, metadata, &resource_types)?;
+    Ok(match secret {
+        Some(secret) => view.with_secret(&secret)?,
+        None => view,
+    })
 }
 
 /// Fetch permissions for a resource.
