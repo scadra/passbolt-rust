@@ -18,8 +18,7 @@ use crate::error::PassboltError;
 use crate::http::HttpClient;
 use crate::resource::document::{self, invalid, SECRET_OBJECT_TYPE};
 use crate::types::{
-    CreateResourcePayload, CustomField, Resource, ResourceIcon, ResourceType, SecretPayload,
-    TotpData,
+    CreateResourcePayload, CustomField, Resource, ResourceType, SecretPayload, TotpData,
 };
 
 /// A resource to create. Fields the resource type does not have are refused.
@@ -38,12 +37,17 @@ pub struct NewResource {
     pub password: Option<String>,
     pub totp: Option<TotpData>,
     pub pin_code: Option<String>,
-    pub icon: Option<ResourceIcon>,
+    /// `{type, value, background_color}`.
+    pub icon: Option<Value>,
     /// Each field with its metadata side (`metadata_key`…) and secret side (`secret_value`…).
     pub custom_fields: Vec<CustomField>,
     pub folder_parent_id: Option<String>,
     /// Expiry date, RFC 3339.
     pub expired: Option<String>,
+    /// Fields set as given, last: the v5 metadata or v4 resource fields (`--field`).
+    pub metadata_fields: Map<String, Value>,
+    /// Secret fields set as given, last (`--secret-field`).
+    pub secret_fields: Map<String, Value>,
 }
 
 /// Create a resource, encrypting its secret for the user, and v5 metadata as the server settings require.
@@ -190,15 +194,7 @@ impl Documents {
             }
             secret.insert("description".into(), note.clone().into());
         }
-        insert(
-            &mut resource,
-            "icon",
-            new_resource
-                .icon
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?,
-        );
+        insert(&mut resource, "icon", new_resource.icon.clone());
         if !new_resource.custom_fields.is_empty() {
             let (metadata_side, secret_side) = split_custom_fields(&new_resource.custom_fields);
             resource.insert("custom_fields".into(), serde_json::to_value(metadata_side)?);
@@ -223,6 +219,8 @@ impl Documents {
             "pin_code",
             new_resource.pin_code.clone().map(Value::from),
         );
+        resource.extend(new_resource.metadata_fields.clone());
+        secret.extend(new_resource.secret_fields.clone());
 
         let secret = if resource_type.secret_is_string() {
             let password = secret.remove("password").unwrap_or(Value::Null);

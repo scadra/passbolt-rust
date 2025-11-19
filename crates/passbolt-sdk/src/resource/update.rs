@@ -17,6 +17,7 @@ use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
 use crate::resource::document::{self, invalid, SECRET_OBJECT_TYPE};
+use crate::resource::view::v4_fields;
 use crate::types::{Resource, ResourceType, SecretPayload, TotpData, UpdateResourcePayload};
 
 /// Changes to a resource; `None` keeps the current value.
@@ -38,15 +39,20 @@ pub struct ResourceChanges {
     pub remove_totp: bool,
     /// `Some(None)` clears the expiry.
     pub expired: Option<Option<String>>,
+    /// Fields set as given, last: the v5 metadata or v4 resource fields (`--field`).
+    pub metadata_fields: Map<String, Value>,
+    /// Secret fields set as given, last (`--secret-field`).
+    pub secret_fields: Map<String, Value>,
 }
 
 impl ResourceChanges {
-    const fn changes_the_secret(&self) -> bool {
+    fn changes_the_secret(&self) -> bool {
         self.note.is_some()
             || self.password.is_some()
             || self.pin_code.is_some()
             || self.totp.is_some()
             || self.remove_totp
+            || !self.secret_fields.is_empty()
     }
 }
 
@@ -195,18 +201,7 @@ async fn current_fields<H: HttpClient>(
             _ => Map::new(),
         }
     } else {
-        let mut fields = Map::new();
-        fields.insert("name".into(), resource.name.clone().into());
-        for (key, value) in [
-            ("username", &resource.username),
-            ("uri", &resource.uri),
-            ("description", &resource.description),
-        ] {
-            if let Some(value) = value {
-                fields.insert(key.into(), value.clone().into());
-            }
-        }
-        fields
+        v4_fields(resource)
     };
     fields.remove("object_type");
     fields.remove("resource_type_id");
@@ -246,6 +241,7 @@ fn apply_field_changes(
             fields.insert("description".into(), description.clone().into());
         }
     }
+    fields.extend(changes.metadata_fields.clone());
     Ok(())
 }
 
@@ -300,13 +296,21 @@ fn changed_secret(
         let merged = merged_totp(secret.get("totp"), totp)?;
         secret.insert("totp".into(), merged);
     }
+    secret.extend(changes.secret_fields.clone());
     // Written by older clients, not part of any resource type.
     if let Some(Value::Object(totp)) = secret.get_mut("totp") {
         totp.remove("issuer");
     }
 
     if new_type.secret_is_string() {
-        return Ok((secret.remove("password").unwrap_or_default(), Vec::new()));
+        let password = secret.remove("password").unwrap_or_default();
+        if let Some(field) = secret.keys().next() {
+            return Err(invalid(
+                new_type,
+                &format!("{field} is not allowed by this resource type"),
+            ));
+        }
+        return Ok((password, Vec::new()));
     }
     if new_type.is_v5() {
         secret.insert("object_type".into(), SECRET_OBJECT_TYPE.into());

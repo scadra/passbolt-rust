@@ -219,7 +219,11 @@ fn v5_resources_read_back_with_their_decrypted_name() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|resource| resource["metadata"].is_string())
+        .filter(|resource| {
+            resource["resource_type"]
+                .as_str()
+                .is_some_and(|slug| slug.starts_with("v5-"))
+        })
         .filter_map(|resource| resource["id"].as_str())
         .take(10)
         .collect();

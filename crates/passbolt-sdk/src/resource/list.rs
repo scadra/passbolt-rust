@@ -10,36 +10,48 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
-
 use crate::client::{PassboltSdk, ResourceQuery};
+use crate::error::PassboltError;
 use crate::filter::Filter;
 use crate::http::HttpClient;
 use crate::resource::filter::filter_resources;
-use crate::types::Resource;
+use crate::resource::view::ResourceView;
 
+/// List resources with their v5 metadata decrypted, and their secrets with `secret_workers`
+/// (decryption threads, 0 for one per CPU).
+///
+/// `query.search` and `filters` apply to the decrypted fields: the server cannot search
+/// encrypted v5 names.
 pub async fn list_resources<H: HttpClient>(
     client: &PassboltSdk<H>,
-    favorites_only: bool,
-    owned_by_me: bool,
-    group_ids: Vec<String>,
-    folder_ids: Vec<String>,
-    search: Option<String>,
+    query: ResourceQuery,
     filters: &[Filter],
-) -> Result<Vec<Resource>> {
-    let query = ResourceQuery {
-        favorites_only,
-        owned_by_me,
-        group_ids,
-        folder_ids,
-        search: search.clone(),
-        ..Default::default()
+    secret_workers: Option<usize>,
+) -> Result<Vec<ResourceView>, PassboltError> {
+    let search = query.search.clone();
+    let resources = client.get_resources(query).await?;
+    let resource_types = client.resource_types().await?;
+    let mut metadatas = client.decrypt_metadata_batch(&resources).await?;
+    let mut secrets = match secret_workers {
+        Some(workers) => {
+            client
+                .decrypt_secret_texts_batch(&resources, workers)
+                .await?
+        }
+        None => std::collections::HashMap::default(),
     };
-    let mut resources = client.get_resources(query).await?;
-    // The server ignores the search filter (v5 names are encrypted): match the name here.
+    let mut views = Vec::with_capacity(resources.len());
+    for resource in resources {
+        let id = resource.id.clone();
+        let mut view = ResourceView::new(resource, metadatas.remove(&id), &resource_types)?;
+        if let Some(secret) = secrets.remove(&id) {
+            view = view.with_secret(&secret)?;
+        }
+        views.push(view);
+    }
     if let Some(search) = search {
         let needle = search.to_lowercase();
-        resources.retain(|resource| resource.name.to_lowercase().contains(&needle));
+        views.retain(|view| view.name.to_lowercase().contains(&needle));
     }
-    Ok(filter_resources(resources, filters))
+    Ok(filter_resources(views, filters))
 }

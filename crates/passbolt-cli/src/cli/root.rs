@@ -193,6 +193,13 @@ pub enum CreateEntity {
         /// PIN code, for v5-pin-code (4 to 12 digits)
         #[arg(long)]
         pin_code: Option<String>,
+        /// Field of the v5 metadata (or v4 resource) as key=value, the value read as JSON if it is
+        /// JSON: --field 'icon={"type":"keepass-icon-set","value":42}'
+        #[arg(long = "field")]
+        field: Vec<String>,
+        /// Secret field as key=value, the value read as JSON if it is JSON
+        #[arg(long = "secret-field")]
+        secret_field: Vec<String>,
         /// Parent folder ID
         #[arg(short = 'f', long)]
         folder_parent_id: Option<String>,
@@ -369,6 +376,8 @@ pub struct UpdateArgs {
     pub entity: UpdateEntity,
 }
 
+// Parsed once per run: the size of the resource variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum UpdateEntity {
     Resource {
@@ -391,6 +400,13 @@ pub enum UpdateEntity {
         /// PIN code, for v5-pin-code (4 to 12 digits)
         #[arg(long)]
         pin_code: Option<String>,
+        /// Field of the v5 metadata (or v4 resource) as key=value, the value read as JSON if it is
+        /// JSON: --field 'icon={"type":"keepass-icon-set","value":42}'
+        #[arg(long = "field")]
+        field: Vec<String>,
+        /// Secret field as key=value, the value read as JSON if it is JSON
+        #[arg(long = "secret-field")]
+        secret_field: Vec<String>,
         #[arg(long)]
         expiry: Option<String>,
         /// TOTP secret key (base32); adds/replaces TOTP for this resource

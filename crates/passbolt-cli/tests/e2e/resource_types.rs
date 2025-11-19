@@ -11,8 +11,8 @@
 // @since         0.1.0
 
 use crate::common::{
-    admin_id, create_folder, create_resource, ids, run, run_json, run_json_as, share_with_user_id,
-    unique_name, Cleanup, ADMIN,
+    admin_id, create_folder, create_resource, ids, run, run_json, run_json_as, run_text,
+    share_with_user_id, unique_name, Cleanup, ADMIN,
 };
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
@@ -79,7 +79,12 @@ fn every_creatable_type_reads_back() {
     for (slug, args, v5) in cases {
         let (_resource, fetched) = create_and_get(slug, args);
 
-        assert_eq!(fetched["metadata"].is_string(), v5, "{slug}: {fetched}");
+        assert_eq!(fetched["resource_type"], slug, "{fetched}");
+        assert_eq!(
+            fetched["metadata_key_type"].is_string(),
+            v5,
+            "{slug}: {fetched}"
+        );
     }
 }
 
@@ -160,7 +165,6 @@ fn v5_personal_resource_can_be_shared() {
 }
 
 #[test]
-#[ignore = "V5-23: --search matches the v4 name, empty for v5 resources"]
 fn v5_resource_is_found_by_name() {
     let name = unique_name("v5");
     let resource = create_resource(&name, "p", &["--type", "v5-default"]);
@@ -223,4 +227,100 @@ fn moving_with_the_folder_permissions_shares_like_the_folder() {
 
     let as_recipient = run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
     assert_eq!(as_recipient["password"], "folder-password");
+}
+
+const CUSTOM_FIELD_ID: &str = "0f7b6a51-0000-4000-8000-0000000000c1";
+
+#[test]
+fn custom_fields_note_and_pin_code_read_back_in_get() {
+    let custom_fields = format!(
+        r#"custom_fields=[{{"id":"{CUSTOM_FIELD_ID}","type":"text","metadata_key":"Account"}}]"#
+    );
+    let secret_custom_fields = format!(
+        r#"custom_fields=[{{"id":"{CUSTOM_FIELD_ID}","type":"text","secret_value":"42"}}]"#
+    );
+    let (fields, _) = create_and_get(
+        "v5-custom-fields",
+        &[
+            "--field",
+            &custom_fields,
+            "--secret-field",
+            &secret_custom_fields,
+        ],
+    );
+    let (note, _) = create_and_get("v5-note", &["--note", "a secret note"]);
+    let (pin, _) = create_and_get("v5-pin-code", &["--pin-code", "246810"]);
+
+    let shown = run_text(&["get", "resource", "--id", &fields.id]);
+    assert!(shown.contains("Account") && shown.contains("42"), "{shown}");
+    assert!(run_text(&["get", "resource", "--id", &note.id]).contains("a secret note"));
+    assert!(run_text(&["get", "resource", "--id", &pin.id]).contains("246810"));
+
+    let as_json = run_json(&["get", "resource", "--id", &fields.id]);
+    assert_eq!(
+        as_json["metadata"]["custom_fields"][0]["metadata_key"],
+        "Account"
+    );
+    assert_eq!(as_json["secret"]["custom_fields"][0]["secret_value"], "42");
+}
+
+#[test]
+fn a_field_updates_without_touching_the_others() {
+    let resource = create_resource(
+        &unique_name("v5"),
+        "p",
+        &["--type", "v5-default", "--username", "kept"],
+    );
+
+    run(&[
+        "update",
+        "resource",
+        "--id",
+        &resource.id,
+        "--field",
+        r#"icon={"type":"keepass-icon-set","value":7}"#,
+    ]);
+
+    let fetched = run_json(&["get", "resource", "--id", &resource.id]);
+    assert_eq!(fetched["metadata"]["icon"]["value"], 7);
+    assert_eq!(fetched["username"], "kept");
+    assert_eq!(fetched["password"], "p");
+}
+
+#[test]
+fn v5_totp_generates_a_code() {
+    let (resource, _) = create_and_get(
+        "v5-default-with-totp",
+        &["--password", "p", "--totp-key", TOTP_KEY],
+    );
+
+    let code = run_json(&["get", "totp", "--id", &resource.id]);
+
+    assert_eq!(code["code"].as_str().map(str::len), Some(6), "{code}");
+}
+
+#[test]
+fn list_json_shows_the_requested_decrypted_columns() {
+    let name = unique_name("v5");
+    let _resource = create_resource(&name, "listed-password", &["--type", "v5-default"]);
+
+    let listed = run_json(&[
+        "list", "resource", "--search", &name, "-c", "Name", "-c", "Password", "-c", "Type",
+    ]);
+
+    assert_eq!(
+        listed,
+        serde_json::json!([{"name": name, "password": "listed-password", "resource_type": "v5-default"}])
+    );
+}
+
+#[test]
+fn an_unknown_column_is_refused() {
+    let output = crate::common::passbolt()
+        .args(["list", "resource", "-c", "colour"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown column colour"));
 }
