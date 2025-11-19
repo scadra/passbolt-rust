@@ -15,12 +15,9 @@ mod config;
 mod keepass;
 mod util;
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-use passbolt_sdk::types::ResourceMetadata;
 
 use cli::root::{
     Cli, Commands, CreateEntity, DeleteEntity, GetEntity, ListEntity, MoveEntity, ShareEntity,
@@ -183,6 +180,8 @@ async fn dispatch(
                 description,
                 note,
                 pin_code,
+                field,
+                secret_field,
                 folder_parent_id,
                 expiry,
                 totp_key,
@@ -203,7 +202,12 @@ async fn dispatch(
                 });
 
                 let needs_password = resource_type.as_deref().map_or_else(
-                    || totp.is_none() && pin_code.is_none() && note.is_none(),
+                    || {
+                        totp.is_none()
+                            && pin_code.is_none()
+                            && note.is_none()
+                            && secret_field.is_empty()
+                    },
                     |slug| {
                         matches!(
                             slug,
@@ -236,6 +240,8 @@ async fn dispatch(
                     folder_parent_id: folder_parent_id.clone(),
                     expired: parse_expiry_opt(expiry.as_ref())?
                         .and_then(|expiry| expiry.as_str().map(String::from)),
+                    metadata_fields: util::resources::parse_fields(field)?,
+                    secret_fields: util::resources::parse_fields(secret_field)?,
                     ..NewResource::default()
                 };
                 let resource =
@@ -307,57 +313,16 @@ async fn dispatch(
         // ── Get ─────────────────────────────────────────────────────────────
         Commands::Get(args) => match &args.entity {
             GetEntity::Resource { id } => {
-                let resource = passbolt_sdk::resource::get::get_resource(client, id).await?;
-                let secret =
-                    passbolt_sdk::resource::get::get_resource_secret(client, &resource).await?;
-
-                let metadata = client.decrypt_resource_metadata(&resource).await?;
-
-                let name = metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.name.as_deref())
-                    .unwrap_or(&resource.name);
-                let username = metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.username.as_deref())
-                    .unwrap_or_else(|| resource.username.as_deref().unwrap_or(""));
-                let uri = metadata
-                    .as_ref()
-                    .and_then(ResourceMetadata::uri)
-                    .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""));
-                let description = metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.description.as_deref())
-                    .unwrap_or_else(|| secret.description.as_deref().unwrap_or(""));
-
+                let view = passbolt_sdk::resource::get::get_resource_view(client, id).await?;
                 if json_output {
-                    let mut resource_json = serde_json::to_value(&resource)?;
-                    resource_json["password"] =
-                        serde_json::Value::String(secret.password.clone().unwrap_or_default());
-                    if metadata.is_some() {
-                        resource_json["name"] = serde_json::json!(name);
-                        resource_json["username"] = serde_json::json!(username);
-                        resource_json["uri"] = serde_json::json!(uri);
-                        resource_json["description"] = serde_json::json!(description);
-                    }
-                    output::print_json(&resource_json)?;
+                    output::print_json(&view)?;
                 } else {
-                    let expiry = resource
-                        .expired
-                        .map(|date| date.to_rfc3339())
-                        .unwrap_or_default();
-                    output::print_kv(&[
-                        ("ID", resource.id.as_str()),
-                        ("Name", name),
-                        ("Username", username),
-                        ("URI", uri),
-                        (
-                            "Password",
-                            secret.password.as_deref().unwrap_or("[encrypted]"),
-                        ),
-                        ("Description", description),
-                        ("Expiry", expiry.as_str()),
-                    ]);
+                    let rows = util::resources::detail_rows(&view);
+                    let pairs: Vec<(&str, &str)> = rows
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect();
+                    output::print_kv(&pairs);
                 }
             }
 
@@ -476,100 +441,60 @@ async fn dispatch(
                 column,
                 filter,
             } => {
-                let filters = parse_filters(filter)?;
+                use util::resources::{column_name, column_text, needs_secrets, DEFAULT_COLUMNS};
 
-                let resources = passbolt_sdk::resource::list::list_resources(
+                let columns: Vec<&str> = if column.is_empty() && !json_output {
+                    DEFAULT_COLUMNS.to_vec()
+                } else {
+                    column
+                        .iter()
+                        .map(|column| column_name(column))
+                        .collect::<Result<_>>()?
+                };
+                let filters = parse_filters(filter)?;
+                let filter_names: Vec<&str> =
+                    filters.iter().map(|filter| filter.field.as_str()).collect();
+                let secret_workers =
+                    (needs_secrets(&columns) || needs_secrets(&filter_names)).then_some(workers);
+
+                let query = passbolt_sdk::ResourceQuery {
+                    favorites_only: *favorite,
+                    owned_by_me: *own,
+                    group_ids: group.clone(),
+                    folder_ids: folder.clone(),
+                    search: search.clone(),
+                    ..Default::default()
+                };
+                let views = passbolt_sdk::resource::list::list_resources(
                     client,
-                    *favorite,
-                    *own,
-                    group.clone(),
-                    folder.clone(),
-                    search.clone(),
+                    query,
                     &filters,
+                    secret_workers,
                 )
                 .await?;
 
                 if json_output {
-                    output::print_json_with_columns(&resources, column)?;
+                    if columns.is_empty() {
+                        output::print_json(&views)?;
+                    } else {
+                        output::print_json(&util::resources::select_columns(&views, &columns)?)?;
+                    }
                 } else {
-                    let default_columns = ["ID", "FolderParentID", "Name", "Username", "URI"];
-                    let effective_columns: Vec<String> = if column.is_empty() {
-                        default_columns
-                            .iter()
-                            .map(|column| (*column).to_string())
-                            .collect()
-                    } else {
-                        column.clone()
-                    };
-
-                    let needs_decrypt = effective_columns.iter().any(|column| {
-                        matches!(column.to_lowercase().as_str(), "password" | "description")
-                    });
-
-                    let secrets = if needs_decrypt {
-                        client.decrypt_secrets_batch(&resources, workers).await?
-                    } else {
-                        HashMap::new()
-                    };
-
-                    let metadatas = client.decrypt_metadata_batch(&resources).await?;
-
-                    let rows: Vec<Vec<String>> = resources
+                    let rows = views
                         .iter()
-                        .map(|resource| {
-                            let secret = secrets.get(&resource.id);
-                            let metadata = metadatas.get(&resource.id);
-                            effective_columns
+                        .map(|view| {
+                            columns
                                 .iter()
-                                .map(|column| match column.to_lowercase().as_str() {
-                                    "id" => resource.id.clone(),
-                                    "name" => metadata
-                                        .and_then(|metadata| metadata.name.as_deref())
-                                        .unwrap_or(&resource.name)
-                                        .to_string(),
-                                    "username" => metadata
-                                        .and_then(|metadata| metadata.username.as_deref())
-                                        .unwrap_or_else(|| {
-                                            resource.username.as_deref().unwrap_or("")
-                                        })
-                                        .to_string(),
-                                    "uri" => metadata
-                                        .and_then(ResourceMetadata::uri)
-                                        .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""))
-                                        .to_string(),
-                                    "folderparentid" | "folder_parent_id" => {
-                                        resource.folder_parent_id.clone().unwrap_or_default()
-                                    }
-                                    "password" => secret
-                                        .and_then(|secret| secret.password.as_deref())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    "description" => metadata
-                                        .and_then(|metadata| metadata.description.as_deref())
-                                        .or_else(|| {
-                                            secret.and_then(|secret| secret.description.as_deref())
-                                        })
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    "created" => resource
-                                        .created
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    "modified" => resource
-                                        .modified
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    "expired" | "expiry" => resource
-                                        .expired
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    _ => String::new(),
-                                })
-                                .collect()
+                                .map(|name| column_text(view, name))
+                                .collect::<Result<Vec<_>>>()
                         })
-                        .collect();
-
-                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
+                        .collect::<Result<Vec<_>>>()?;
+                    let headers: Vec<&str> = column.iter().map(String::as_str).collect();
+                    let headers = if headers.is_empty() {
+                        columns.clone()
+                    } else {
+                        headers
+                    };
                     output::print_table(&headers, rows);
                 }
             }
@@ -765,6 +690,8 @@ async fn dispatch(
                 description,
                 note,
                 pin_code,
+                field,
+                secret_field,
                 expiry,
                 totp_key,
                 totp_algo,
@@ -796,6 +723,8 @@ async fn dispatch(
                     remove_totp: *remove_totp,
                     expired: parse_expiry_opt(expiry.as_ref())?
                         .map(|expiry| expiry.as_str().map(String::from)),
+                    metadata_fields: util::resources::parse_fields(field)?,
+                    secret_fields: util::resources::parse_fields(secret_field)?,
                 };
                 let resource =
                     passbolt_sdk::resource::update::update_resource(client, id, &changes).await?;
