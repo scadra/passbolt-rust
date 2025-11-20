@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use passbolt_sdk::{HttpClient, HttpResponse, TransportError};
 use serde_json::{json, Value};
 
-use super::keys::ADA;
+use super::keys::{TestKey, ADA, SERVER};
 use super::{data, ADA_ID, BASE_URL, BETTY_ID, CAROL_ID, CSRF_TOKEN, ERIN_ID};
 
 /// Paths reachable while MFA is pending (`MfaRequiredCheckMiddleware::isRouteWhiteListed`).
@@ -98,6 +98,8 @@ struct State {
     csrf_cookie: Option<String>,
     no_auth_token_header: bool,
     login_verification_error: Option<(u16, String)>,
+    /// The private key the server decrypts verify tokens with; `None` is the real one.
+    impostor_key: Option<&'static TestKey>,
     /// `/metadata/types/settings.json`; `None` without the Metadata plugin.
     metadata_types_settings: Option<Value>,
 }
@@ -115,6 +117,7 @@ impl FakePassbolt {
             state: Arc::default(),
         };
         fake.on("GET", "/users/me.json", data::user("ada"));
+        fake.on("GET", "/auth/verify.json", data::auth_verify(&SERVER));
         fake.on("POST", "/auth/logout.json", Value::Null);
         fake
     }
@@ -128,6 +131,11 @@ impl FakePassbolt {
         self.on("GET", "/users.json", data::users(&names));
         self.on("GET", "/resource-types.json", data::resource_types());
         self.on("GET", "/roles.json", data::roles());
+    }
+
+    /// A server serving the real server public key while holding `key`.
+    pub fn impersonated_with(&self, key: &'static TestKey) {
+        self.state.lock().unwrap().impostor_key = Some(key);
     }
 
     /// The Metadata plugin with `types` and `keys` settings.
@@ -284,6 +292,7 @@ impl FakePassbolt {
         let body = body.unwrap_or(Value::Null);
         match (method, path) {
             ("POST", "/auth/login.json") => self.gpgauth_login(&body),
+            ("POST", "/auth/verify.json") => self.verify_server(&body),
             ("POST", "/mfa/verify/totp.json") => self.verify_totp(&body),
             ("POST", "/resources.json") => self
                 .refuse_resource(&body, path, true)
@@ -547,6 +556,42 @@ impl FakePassbolt {
         envelope["header"]["pagination"] = json!({ "count": count, "page": page, "limit": limit });
         response.body = serde_json::to_vec(&envelope).unwrap();
         Some(response)
+    }
+
+    /// `GpgAuthenticator::_stage0`: decrypt the token, return it if it is a `GPGAuth` nonce.
+    fn verify_server(&self, body: &Value) -> HttpResponse {
+        const URL: &str = "/auth/verify.json";
+        if body.pointer("/gpg_auth/keyid").and_then(Value::as_str)
+            != Some(ADA.fingerprint().as_str())
+        {
+            return json_response(
+                400,
+                "There is no user associated with this key.",
+                URL,
+                &Value::Null,
+            );
+        }
+        let server_key = self.state.lock().unwrap().impostor_key.unwrap_or(&SERVER);
+        let nonce = body
+            .pointer("/gpg_auth/server_verify_token")
+            .and_then(Value::as_str)
+            .and_then(|token| server_key.try_decrypt(token));
+        let Some(nonce) = nonce else {
+            return json_response(400, "Decryption failed.", URL, &Value::Null);
+        };
+        let mut response = json_response(400, "The authentication failed.", URL, &Value::Null);
+        let parts: Vec<&str> = nonce.split('|').collect();
+        if let [version, "36", id, version_again] = parts.as_slice() {
+            if version == version_again
+                && *version == "gpgauthv1.3.0"
+                && uuid::Uuid::try_parse(id).is_ok()
+            {
+                response
+                    .headers
+                    .push(("X-GPGAuth-Verify-Response".into(), nonce));
+            }
+        }
+        response
     }
 
     fn gpgauth_login(&self, body: &Value) -> HttpResponse {

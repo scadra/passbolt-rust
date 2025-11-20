@@ -102,6 +102,7 @@ fn build_sdk_config(
         tls_client_cert: String::new(),
         tls_client_private_key: String::new(),
         proxy: non_empty(proxy).unwrap_or_default(),
+        server_public_key: String::new(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
     }

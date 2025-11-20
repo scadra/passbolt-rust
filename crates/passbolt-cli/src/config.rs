@@ -62,6 +62,9 @@ pub struct Config {
     /// 0 = auto-detect (number of CPUs)
     #[serde(default)]
     pub workers: usize,
+    /// Server public key pinned by `passbolt verify`.
+    #[serde(default)]
+    pub server_public_key: String,
     #[serde(default)]
     pub server_verify_token: String,
     #[serde(default)]
@@ -157,14 +160,31 @@ impl Config {
 
     /// Load the config at `path` (if it exists), then the `PASSBOLT_*` variables over it.
     pub fn load_from(path: &Path) -> Result<Self> {
+        Self::read(path, true)
+    }
+
+    /// Pin the server public key in the config file, changing nothing else in it:
+    /// the command line and environment overrides stay out of the file.
+    pub fn save_server_public_key(server_public_key: &str) -> Result<()> {
+        let path = Self::config_path()?;
+        let mut stored = Self::read(&path, false)?;
+        stored.server_public_key = server_public_key.to_string();
+        stored.server_verify_token.clear();
+        stored.server_verify_enc_token.clear();
+        stored.save_to(&path)
+    }
+
+    fn read(path: &Path, with_environment: bool) -> Result<Self> {
         let mut settings = config::Config::builder();
         if path.exists() {
             settings = settings.add_source(
                 config::File::from(path.to_path_buf()).format(config::FileFormat::Toml),
             );
         }
-        // No separator: `PASSBOLT_SERVER_ADDRESS` is `server_address`, not `server.address`.
-        settings = settings.add_source(config::Environment::with_prefix("PASSBOLT"));
+        if with_environment {
+            // No separator: `PASSBOLT_SERVER_ADDRESS` is `server_address`, not `server.address`.
+            settings = settings.add_source(config::Environment::with_prefix("PASSBOLT"));
+        }
 
         settings
             .build()
@@ -225,6 +245,7 @@ impl Config {
             tls_client_cert: self.tls_client_cert.clone(),
             tls_client_private_key: self.tls_client_private_key.clone(),
             proxy: self.proxy.clone(),
+            server_public_key: self.server_public_key.clone(),
             server_verify_enc_token: self.server_verify_enc_token.clone(),
             server_verify_token: self.server_verify_token.clone(),
         })

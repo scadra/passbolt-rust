@@ -14,8 +14,8 @@ use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use zeroize::Zeroize;
 
-use crate::crypto::{decrypt_message, PrivateKey};
-use crate::error::{AuthError, CryptoError, PassboltError};
+use crate::crypto::{decrypt_message, encrypt_message, parse_public_key, PrivateKey};
+use crate::error::{AuthError, PassboltError};
 use crate::http::HttpClient;
 
 /// Result of a successful login — CSRF token and user ID.
@@ -191,75 +191,97 @@ fn extract_auth_tokens(response: &crate::http::HttpResponse) -> Result<AuthToken
     })
 }
 
-/// Verify server identity via GET /auth/verify.json.
+const VERIFY_TOKEN_VERSION: &str = "gpgauthv1.3.0";
+
+/// The server public key and its fingerprint, as `GET /auth/verify.json` serves them.
+///
+/// Anyone can serve a copy: pin it once, then prove the server holds the private key
+/// with [`verify_server`] at every login.
+pub async fn fetch_server_key<H: HttpClient>(
+    http: &H,
+    base_url: &str,
+) -> Result<(String, String), PassboltError> {
+    let response = http
+        .get(&format!("{base_url}/auth/verify.json"), &[])
+        .await?;
+    let body: Value = serde_json::from_slice(&response.body)?;
+    let field = |name: &str| {
+        body.pointer(&format!("/body/{name}"))
+            .and_then(Value::as_str)
+            .map(String::from)
+            .ok_or_else(|| AuthError::LoginFailed(format!("the server sent no {name}")))
+    };
+    Ok((field("fingerprint")?, field("keydata")?))
+}
+
+/// A fresh `GPGAuth` nonce, in the format the server agrees to decrypt.
+#[must_use]
+pub fn new_verify_token() -> String {
+    format!(
+        "{VERIFY_TOKEN_VERSION}|36|{}|{VERIFY_TOKEN_VERSION}",
+        uuid::Uuid::new_v4()
+    )
+}
+
+/// Ask the server to decrypt `encrypted_token` (`GPGAuth` stage 0): only the holder of the
+/// server private key can answer `expected_token` in `X-GPGAuth-Verify-Response`.
+///
+/// `user_fingerprint` must be a key the server knows: it identifies the user first.
 pub async fn verify_server<H: HttpClient>(
     http: &H,
     base_url: &str,
-    private_key: &PrivateKey,
-    passphrase: &str,
-) -> Result<(String, String), PassboltError> {
-    let url = format!("{base_url}/auth/verify.json");
-    let response = http.get(&url, &[]).await?;
-
-    let body: Value = serde_json::from_slice(&response.body)?;
-
-    let fingerprint = body
-        .pointer("/body/fingerprint")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| AuthError::LoginFailed("Server did not return fingerprint".into()))?
-        .to_string();
-
-    let encrypted_challenge = body
-        .pointer("/body/challenge")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let decrypted_token = if encrypted_challenge.is_empty() {
-        String::new()
-    } else {
-        let decrypted = decrypt_message(&encrypted_challenge, &private_key.key, passphrase)
-            .map_err(|error| CryptoError::Decrypt(format!("server verify challenge: {error}")))?;
-        String::from_utf8(decrypted)
-            .map_err(|error| {
-                PassboltError::Other(format!("Server verify token is not valid UTF-8: {error}"))
-            })?
-            .trim()
-            .to_string()
-    };
-
-    Ok((fingerprint, decrypted_token))
+    user_fingerprint: &str,
+    encrypted_token: &str,
+    expected_token: &str,
+) -> Result<(), PassboltError> {
+    let body = serde_json::json!({
+        "gpg_auth": { "keyid": user_fingerprint, "server_verify_token": encrypted_token }
+    });
+    let response = http
+        .post(
+            &format!("{base_url}/auth/verify.json"),
+            &[],
+            &serde_json::to_vec(&body)?,
+        )
+        .await?;
+    // The server answers "authentication failed": stage 0 does not log in.
+    if response.header("X-GPGAuth-Verify-Response") == Some(expected_token) {
+        return Ok(());
+    }
+    Err(AuthError::ServerIdentityMismatch(
+        "the server could not prove it holds its private key".into(),
+    )
+    .into())
 }
 
-/// Check stored server identity tokens before login.
+/// Prove the server holds the key pinned by `passbolt verify`, before sending anything.
+///
+/// With `server_public_key`, a fresh token is encrypted for it, as the browser extension does.
+/// Without it, the stored `encrypted_token` is sent again, as go-passbolt-cli does.
 pub async fn check_server_identity<H: HttpClient>(
     http: &H,
     base_url: &str,
-    private_key: &PrivateKey,
-    passphrase: &str,
-    stored_fingerprint: &str,
-    stored_token: &str,
+    user_fingerprint: &str,
+    server_public_key: &str,
+    token: &str,
+    encrypted_token: &str,
 ) -> Result<(), PassboltError> {
-    if stored_fingerprint.is_empty() && stored_token.is_empty() {
+    if !server_public_key.is_empty() {
+        let server_key = parse_public_key(server_public_key)?;
+        let token = new_verify_token();
+        let encrypted_token = encrypt_message(token.as_bytes(), &[&server_key])?;
+        return verify_server(http, base_url, user_fingerprint, &encrypted_token, &token).await;
+    }
+    if token.is_empty() && encrypted_token.is_empty() {
         return Ok(());
     }
-
-    let (fingerprint, plain_token) = verify_server(http, base_url, private_key, passphrase).await?;
-
-    if !stored_fingerprint.is_empty() && fingerprint != stored_fingerprint {
-        return Err(AuthError::ServerIdentityMismatch(format!(
-            "expected {stored_fingerprint}, got {fingerprint}"
-        ))
+    if token.is_empty() || !encrypted_token.starts_with("-----BEGIN PGP MESSAGE-----") {
+        return Err(AuthError::ServerIdentityMismatch(
+            "the stored server verification is incomplete: run `passbolt verify` again".into(),
+        )
         .into());
     }
-
-    if !stored_token.is_empty() && !plain_token.is_empty() && plain_token != stored_token {
-        return Err(
-            AuthError::ServerIdentityMismatch("server verify token mismatch".into()).into(),
-        );
-    }
-
-    Ok(())
+    verify_server(http, base_url, user_fingerprint, encrypted_token, token).await
 }
 
 #[cfg(test)]

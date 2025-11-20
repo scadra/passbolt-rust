@@ -56,8 +56,8 @@ async fn main() -> Result<()> {
 
         // ── Verify ─────────────────────────────────────────────────────────
         Commands::Verify(args) => {
-            let mut config = load_config(&cli)?;
-            cli::verify::run(args, &mut config).await?;
+            let config = load_config(&cli)?;
+            cli::verify::run(args, &config).await?;
         }
 
         // All other commands require a connected client

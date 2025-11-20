@@ -31,8 +31,10 @@ pub struct SdkConfig {
     pub tls_client_cert: String,
     pub tls_client_private_key: String,
     pub proxy: String,
-    /// Stored server fingerprint (for pre-login identity check)
+    /// Server public key pinned by `passbolt verify`: proven at each login with a fresh token.
+    pub server_public_key: String,
+    /// go-passbolt-cli verification: a token encrypted for the server, sent again at each login…
     pub server_verify_enc_token: String,
-    /// Stored decrypted challenge token
+    /// …and the token the server must return.
     pub server_verify_token: String,
 }

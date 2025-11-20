@@ -138,20 +138,15 @@ impl<H: HttpClient> PassboltSdk<H> {
         let passphrase = sdk_config.passphrase.clone();
         let base_url = sdk_config.server_url.trim_end_matches('/').to_string();
 
-        // Pre-login server identity check
-        if !sdk_config.server_verify_enc_token.is_empty()
-            || !sdk_config.server_verify_token.is_empty()
-        {
-            auth::check_server_identity(
-                &http,
-                &base_url,
-                &private_key,
-                passphrase.expose_secret(),
-                &sdk_config.server_verify_enc_token,
-                &sdk_config.server_verify_token,
-            )
-            .await?;
-        }
+        auth::check_server_identity(
+            &http,
+            &base_url,
+            &private_key.fingerprint,
+            &sdk_config.server_public_key,
+            &sdk_config.server_verify_token,
+            &sdk_config.server_verify_enc_token,
+        )
+        .await?;
 
         let mut tokens: AuthTokens =
             auth::login(&http, &base_url, &private_key, passphrase.expose_secret()).await?;
