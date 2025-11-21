@@ -1238,31 +1238,32 @@ impl<H: HttpClient> PassboltSdk<H> {
         self.get("/tags.json").await
     }
 
-    /// Add a tag to a resource. Creates the tag if it doesn't exist.
+    /// Add a tag to a resource, keeping its other tags. Creates the tag if it doesn't exist.
     pub async fn add_tag_to_resource(
         &self,
         resource_id: &str,
         slug: &str,
-    ) -> Result<Tag, PassboltError> {
+    ) -> Result<Vec<Tag>, PassboltError> {
         let resource_id = uuid_segment(resource_id)?;
-        let body = serde_json::json!({ "slug": slug });
-        self.post(&format!("/tags/{resource_id}.json"), &body).await
+        let resource: Resource = self
+            .get(&format!("/resources/{resource_id}.json?contain[tag]=1"))
+            .await?;
+        let mut slugs: Vec<String> = resource.tags.into_iter().map(|tag| tag.slug).collect();
+        if !slugs.iter().any(|existing| existing == slug) {
+            slugs.push(slug.to_string());
+        }
+        self.update_resource_tags(resource_id, &slugs).await
     }
 
-    /// Replace all tags on a resource.
+    /// Replace all tags on a resource: `POST /tags/{resource_id}.json`, as the browser extension.
     pub async fn update_resource_tags(
         &self,
         resource_id: &str,
-        tags: &[String],
+        slugs: &[String],
     ) -> Result<Vec<Tag>, PassboltError> {
         let resource_id = uuid_segment(resource_id)?;
-        let body: Value = tags
-            .iter()
-            .map(|slug| serde_json::json!({ "slug": slug }))
-            .collect::<Vec<_>>()
-            .into();
-        self.put_request(&format!("/resources/{resource_id}/tags.json"), &body)
-            .await
+        let body = serde_json::json!({ "tags": slugs });
+        self.post(&format!("/tags/{resource_id}.json"), &body).await
     }
 
     /// Update a tag's slug.

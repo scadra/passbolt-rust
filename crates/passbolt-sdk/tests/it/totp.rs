@@ -267,3 +267,38 @@ async fn totp_settings_without_a_totp_are_refused() {
         "{error:?}"
     );
 }
+
+#[tokio::test]
+async fn adding_a_totp_to_a_password_string_moves_its_description_to_the_secret() {
+    let mut resource = data::resource_v4("password-string", "p");
+    resource["description"] = "clear notes".into();
+    let fake = fake_serving_resource("password-string", "p", ada_owner_permissions());
+    fake.on("GET", &resource_path(), resource.clone());
+    fake.on("PUT", &resource_path(), resource);
+
+    update_totp(
+        &fake,
+        TotpChange {
+            key: Some("NEWKEY"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let body = fake.body_of("PUT", &resource_path());
+    assert_eq!(
+        body["resource_type_id"],
+        data::resource_type_id(PASSWORD_DESCRIPTION_TOTP)
+    );
+    assert_eq!(
+        body.get("description"),
+        Some(&Value::Null),
+        "sent to empty it: {body}"
+    );
+    let secret = updated_secret(&fake);
+    assert_eq!(
+        (&secret["password"], &secret["description"]),
+        (&json!("p"), &json!("clear notes"))
+    );
+}

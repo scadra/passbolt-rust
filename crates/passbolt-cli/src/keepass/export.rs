@@ -561,6 +561,7 @@ mod tests {
             favorite: None,
             secrets: vec![],
             permissions: vec![],
+            tags: vec![],
             metadata_armored: None,
             metadata_key_id: None,
             metadata_key_type: None,
