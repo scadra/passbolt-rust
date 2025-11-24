@@ -49,6 +49,9 @@ pub async fn run(args: &ExportArgs, client: &Client, workers: usize) -> Result<(
             use secrecy::ExposeSecret;
 
             let master_password = if let Some(provided_password) = password {
+                if provided_password.is_empty() {
+                    anyhow::bail!("The KeePass master password cannot be empty");
+                }
                 provided_password.clone()
             } else {
                 let secret = read_password("KeePass master password: ")?;
