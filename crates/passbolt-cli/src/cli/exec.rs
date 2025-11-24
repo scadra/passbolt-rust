@@ -25,7 +25,9 @@ pub struct ExecArgs {
     pub command: Vec<String>,
 }
 
-/// Execute a command with `passbolt://UUID` env vars replaced by decrypted secrets.
+/// Execute a command with `passbolt://UUID` env vars replaced by decrypted passwords.
+///
+/// The session is closed before the command starts.
 pub async fn run(args: &ExecArgs, client: &Client) -> Result<()> {
     if args.command.is_empty() {
         bail!("No command specified");
@@ -39,21 +41,18 @@ pub async fn run(args: &ExecArgs, client: &Client) -> Result<()> {
 
     for (key, value) in env_snapshot {
         if let Some(resource_id) = value.strip_prefix(PASSBOLT_SCHEME) {
-            let resource = client
-                .get_resource(resource_id)
+            let view = passbolt_sdk::resource::get::get_resource_view(client, resource_id)
                 .await
-                .with_context(|| format!("Resource not found: {resource_id}"))?;
-
-            let secret = client
-                .decrypt_resource_secret(&resource)
-                .await
-                .with_context(|| format!("Cannot decrypt resource: {resource_id}"))?;
-
-            let password = secret.password.or(secret.raw).unwrap_or_default();
-
+                .with_context(|| format!("Cannot read resource {resource_id}"))?;
+            let Some(password) = view.password else {
+                bail!("Resource {resource_id} has no password to put in {key}");
+            };
             extra_env.insert(key, password);
         }
     }
+
+    // As go-passbolt-cli: the session must not stay open while the command runs.
+    client.logout().await;
 
     let program = &args.command[0];
     let program_args = &args.command[1..];

@@ -81,6 +81,15 @@ pub async fn update_resource<H: HttpClient>(
     let new_type = find_type(next_slug(current_type, changes)?)?;
 
     let (mut fields, kept_fields) = current_fields(client, &resource, current_type).await?;
+    // Leaving `password-string`, the clear description moves to the secret, as the browser
+    // extension does: the new type keeps it there.
+    let leaves_clear_description = current_type.resource_has_field("description")
+        && !new_type.resource_has_field("description");
+    let moved_description = if leaves_clear_description {
+        fields.remove("description")
+    } else {
+        None
+    };
     apply_field_changes(&mut fields, changes, new_type)?;
 
     let description_in_secret =
@@ -93,8 +102,13 @@ pub async fn update_resource<H: HttpClient>(
             .decrypt_resource_secret_text(&resource)
             .await?
             .unwrap_or_default();
-        let (secret, kept_secret_fields) =
-            changed_secret(&current, current_type, new_type, changes)?;
+        let (secret, kept_secret_fields) = changed_secret(
+            &current,
+            current_type,
+            new_type,
+            changes,
+            moved_description.clone(),
+        )?;
         document::validate(
             new_type,
             &fields,
@@ -138,7 +152,11 @@ pub async fn update_resource<H: HttpClient>(
         payload.name = field("name");
         payload.username = field("username");
         payload.uri = field("uri");
-        payload.description = field("description");
+        // `null` empties the clear description that moved to the secret.
+        payload.description = match moved_description {
+            Some(_) => Some(Value::Null),
+            None => field("description").map(Value::from),
+        };
     }
 
     client.update_resource(id, &payload).await
@@ -252,6 +270,7 @@ fn changed_secret(
     current_type: &ResourceType,
     new_type: &ResourceType,
     changes: &ResourceChanges,
+    moved_description: Option<Value>,
 ) -> Result<(Value, Vec<String>), PassboltError> {
     let mut secret = if current_type.secret_is_string() {
         let mut secret = Map::new();
@@ -270,6 +289,9 @@ fn changed_secret(
     };
     let kept_fields = secret.keys().cloned().collect();
 
+    if let Some(description) = moved_description {
+        secret.insert("description".into(), description);
+    }
     if let Some(password) = &changes.password {
         secret.insert("password".into(), password.clone().into());
     }

@@ -18,25 +18,25 @@ use crate::config::Config;
 #[derive(Args, Debug)]
 pub struct VerifyArgs {}
 
-pub async fn run(_args: &VerifyArgs, config: &mut Config) -> Result<()> {
+/// Pin the server public key, once the server proved it holds the private key.
+pub async fn run(_args: &VerifyArgs, config: &Config) -> Result<()> {
     let private_key = passbolt_sdk::crypto::parse_private_key(&config.private_key_text()?)?;
-
     let http = passbolt_sdk::NativeHttpClient::new(&config.http_config()?)?;
+    let base_url = config.server_address.trim_end_matches('/');
 
-    let (fingerprint, token) = passbolt_sdk::auth::verify_server(
+    let (fingerprint, server_public_key) =
+        passbolt_sdk::auth::fetch_server_key(&http, base_url).await?;
+    passbolt_sdk::auth::check_server_identity(
         &http,
-        &config.server_address,
-        &private_key,
-        &config.user_password,
+        base_url,
+        &private_key.fingerprint,
+        &server_public_key,
+        "",
+        "",
     )
     .await?;
+    Config::save_server_public_key(&server_public_key)?;
 
-    config.server_verify_token = token;
-    config.server_verify_enc_token.clone_from(&fingerprint);
-    config.save()?;
-
-    println!("Server verified. Fingerprint: {fingerprint}");
-    println!("Tokens persisted to config.");
-
+    println!("Server key {fingerprint} pinned: each login now checks the server holds it.");
     Ok(())
 }

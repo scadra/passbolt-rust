@@ -21,15 +21,12 @@ use tokio::task::JoinSet;
 use zeroize::ZeroizeOnDrop;
 
 use crate::Client;
-use passbolt_sdk::types::{Folder, Resource, ResourceMetadata, SecretData, TotpData};
+use passbolt_sdk::metadata::MetadataKeys;
+use passbolt_sdk::resource::view::ResourceView;
+use passbolt_sdk::types::{Folder, Resource, ResourceType, TotpData};
 use passbolt_sdk::{crypto, metadata};
 
-type TaskResult = (
-    usize,
-    Option<String>,
-    Result<SecretData>,
-    Option<ResourceMetadata>,
-);
+type TaskResult = (usize, Option<String>, Result<ResourceView>);
 
 /// Export Passbolt resources to a `KeePass` KDBX file, preserving folder hierarchy.
 ///
@@ -110,6 +107,11 @@ pub async fn export_keepass(
         Arc::default()
     };
 
+    let resource_types = client
+        .resource_types()
+        .await
+        .context("Failed to fetch the resource types")?;
+
     // Spawn one blocking task per resource; collect (original_index, result)
     let mut tasks: JoinSet<TaskResult> = JoinSet::new();
 
@@ -120,34 +122,24 @@ pub async fn export_keepass(
         let task_resource = resource.clone();
         let key = Arc::clone(&pgp_key);
         let task_metadata_keys = Arc::clone(&metadata_keys);
+        let task_resource_types = Arc::clone(&resource_types);
         let task_passphrase = Arc::clone(&passphrase);
         let task_progress_bar = Arc::clone(&progress_bar);
         let permit = Arc::clone(&semaphore).acquire_owned().await?;
 
         tasks.spawn_blocking(move || {
             let _permit = permit;
-            let secret = if encrypted.is_empty() {
-                Ok(SecretData::default())
-            } else {
-                decrypt_secret_sync(&encrypted, &key, task_passphrase.expose_secret())
-                    .with_context(|| format!("Failed to decrypt '{name}'"))
-            };
-
-            // Decrypt v5 metadata synchronously in the same blocking task.
-            let metadata = metadata::decrypt_resource_metadata(
-                &task_resource,
+            let view = decrypt_view(
+                task_resource,
+                &encrypted,
                 &key,
                 task_passphrase.expose_secret(),
                 &task_metadata_keys,
+                &task_resource_types,
             )
-            .with_context(|| format!("Failed to decrypt the metadata of '{name}'"));
-            let (result, metadata) = match metadata {
-                Ok(metadata) => (secret, metadata),
-                Err(error) => (Err(error), None),
-            };
-
+            .with_context(|| format!("Failed to decrypt '{name}'"));
             task_progress_bar.inc(1);
-            (index, folder_parent_id, result, metadata)
+            (index, folder_parent_id, view)
         });
     }
 
@@ -182,11 +174,10 @@ fn collect_entries(
         (0..resources.len()).map(|_| None).collect();
     let mut failures = Vec::new();
 
-    for (index, folder_parent_id, secret, metadata) in task_results {
-        match secret {
-            Ok(secret) => {
-                let entry = build_entry(&resources[index], &secret, metadata.as_ref());
-                ordered[index] = Some((folder_parent_id, entry));
+    for (index, folder_parent_id, view) in task_results {
+        match view {
+            Ok(view) => {
+                ordered[index] = Some((folder_parent_id, build_entry(&view)));
             }
             Err(error) => failures.push(error),
         }
@@ -217,22 +208,28 @@ fn extract_secret_data(resource: &Resource) -> String {
         .unwrap_or_default()
 }
 
-/// Synchronous GPG decryption + JSON parse — safe to run in a blocking thread.
-fn decrypt_secret_sync(
-    armored: &str,
+/// Decrypt the metadata and the secret of `resource`, in a blocking thread.
+///
+/// The secret is read by the resource type, as `get resource` does: a `password-string`
+/// password stays a password even if it looks like JSON.
+fn decrypt_view(
+    resource: Resource,
+    encrypted_secret: &str,
     key: &pgp::SignedSecretKey,
     passphrase: &str,
-) -> Result<SecretData> {
-    let plaintext =
-        crypto::decrypt_message(armored, key, passphrase).context("GPG decryption failed")?;
+    metadata_keys: &MetadataKeys,
+    resource_types: &[ResourceType],
+) -> Result<ResourceView> {
+    let metadata = metadata::decrypt_resource_metadata(&resource, key, passphrase, metadata_keys)
+        .context("metadata")?;
+    let view = ResourceView::new(resource, metadata, resource_types)?;
+    if encrypted_secret.is_empty() {
+        return Ok(view);
+    }
+    let plaintext = crypto::decrypt_message(encrypted_secret, key, passphrase)
+        .context("GPG decryption failed")?;
     let text = String::from_utf8(plaintext).context("Secret is not valid UTF-8")?;
-    Ok(
-        serde_json::from_str::<SecretData>(&text).unwrap_or_else(|_| SecretData {
-            password: Some(text.clone()),
-            raw: Some(text),
-            ..Default::default()
-        }),
-    )
+    Ok(view.with_secret(&text)?)
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -249,46 +246,25 @@ struct KeePassEntry {
     otp: Option<String>,
 }
 
-fn build_entry(
-    resource: &Resource,
-    secret: &SecretData,
-    metadata: Option<&ResourceMetadata>,
-) -> KeePassEntry {
-    let password = secret
-        .password
-        .clone()
-        .or_else(|| secret.raw.clone())
-        .unwrap_or_default();
-
-    // v5: prefer metadata fields; fall back to cleartext resource fields.
-    let title = metadata
-        .and_then(|metadata| metadata.name.as_deref())
-        .unwrap_or(&resource.name)
-        .to_string();
-    let username = metadata
-        .and_then(|metadata| metadata.username.as_deref())
-        .unwrap_or_else(|| resource.username.as_deref().unwrap_or(""))
-        .to_string();
-    let url = metadata
-        .and_then(ResourceMetadata::uri)
-        .unwrap_or_else(|| resource.uri.as_deref().unwrap_or(""))
-        .to_string();
-    let notes = metadata
-        .and_then(|metadata| metadata.description.as_deref())
-        .or(secret.description.as_deref())
-        .unwrap_or("")
-        .to_string();
-
-    let otp = secret
-        .totp
+fn build_entry(view: &ResourceView) -> KeePassEntry {
+    // The v5 note is the secret description, after the public one.
+    let notes = [view.description.as_str(), view.note().unwrap_or_default()]
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let otp = view
+        .secret
         .as_ref()
-        .map(|totp| build_otpauth(&title, &username, totp));
+        .and_then(|secret| secret.get("totp"))
+        .and_then(|totp| serde_json::from_value::<TotpData>(totp.clone()).ok())
+        .map(|totp| build_otpauth(&view.name, &view.username, &totp));
 
     KeePassEntry {
-        title,
-        username,
-        url,
-        password,
+        title: view.name.clone(),
+        username: view.username.clone(),
+        url: view.uri.clone(),
+        password: view.password.clone().unwrap_or_default(),
         notes,
         otp,
     }
@@ -421,15 +397,43 @@ fn write_kdbx(
     }
 
     let key = DatabaseKey::new().with_password(password);
+    save_replacing(path, |file| {
+        database
+            .save(file, key)
+            .with_context(|| format!("Cannot write KDBX to {}", path.display()))
+    })
+}
 
-    let mut file =
-        std::fs::File::create(path).with_context(|| format!("Cannot create {}", path.display()))?;
-
-    database
-        .save(&mut file, key)
-        .with_context(|| format!("Cannot write KDBX to {}", path.display()))?;
-
-    Ok(())
+/// Write a sibling file then rename it over `path`: a failed export never damages the
+/// previous one. The file is readable by its owner only on Unix.
+fn save_replacing(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .with_context(|| format!("{} is not a file path", path.display()))?;
+    let temporary = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let written = options
+        .open(&temporary)
+        .with_context(|| format!("Cannot create {}", temporary.display()))
+        .and_then(|mut file| {
+            write(&mut file)?;
+            file.sync_all().context("Cannot flush the export")
+        })
+        .and_then(|()| {
+            std::fs::rename(&temporary, path)
+                .with_context(|| format!("Cannot replace {}", path.display()))
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// Build a keepass `Entry` from our intermediate representation.
@@ -561,6 +565,7 @@ mod tests {
             favorite: None,
             secrets: vec![],
             permissions: vec![],
+            tags: vec![],
             metadata_armored: None,
             metadata_key_id: None,
             metadata_key_type: None,
@@ -784,95 +789,97 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_entry_prefers_v5_metadata_over_clear_fields() {
-        let mut resource = make_resource("clear-name");
-        resource.username = Some("clear-user".into());
-        resource.uri = Some("https://clear.example".into());
-        let secret = SecretData {
-            password: Some("secret".into()),
-            description: Some("secret-description".into()),
-            ..Default::default()
-        };
-        let metadata = ResourceMetadata {
-            object_type: Some("PASSBOLT_RESOURCE_METADATA".into()),
-            name: Some("meta-name".into()),
-            username: Some("meta-user".into()),
-            uris: vec!["https://meta.example".into()],
-            description: Some("meta-description".into()),
-            ..ResourceMetadata::default()
-        };
+    fn types() -> Vec<ResourceType> {
+        ["password-string", "password-and-description", "v5-default"]
+            .into_iter()
+            .map(|slug| ResourceType {
+                id: format!("{slug}-id"),
+                slug: slug.into(),
+                name: None,
+                definition: None,
+            })
+            .collect()
+    }
 
-        let entry = build_entry(&resource, &secret, Some(&metadata));
+    fn typed_resource(name: &str, slug: &str) -> Resource {
+        Resource {
+            resource_type_id: Some(format!("{slug}-id")),
+            ..make_resource(name)
+        }
+    }
 
-        assert_eq!(entry.title, "meta-name");
-        assert_eq!(entry.username, "meta-user");
-        assert_eq!(entry.url, "https://meta.example");
-        assert_eq!(entry.notes, "meta-description");
+    fn view_of(resource: Resource, secret: &str) -> ResourceView {
+        decrypt_view(
+            resource,
+            &encrypt_for_server(secret),
+            &server_private_key(),
+            "",
+            &MetadataKeys::default(),
+            &types(),
+        )
+        .unwrap()
     }
 
     #[test]
-    fn test_build_entry_password_falls_back_to_raw() {
-        let secret = SecretData {
-            raw: Some("raw-secret".into()),
-            ..Default::default()
-        };
+    fn test_build_entry_takes_the_password_and_the_description() {
+        let view = view_of(
+            typed_resource("name", "password-and-description"),
+            r#"{"password":"p4ss","description":"notes"}"#,
+        );
 
-        let entry = build_entry(&make_resource("name"), &secret, None);
+        let entry = build_entry(&view);
 
-        assert_eq!(entry.password, "raw-secret");
+        assert_eq!(
+            (entry.password.as_str(), entry.notes.as_str()),
+            ("p4ss", "notes")
+        );
     }
 
     #[test]
-    fn test_decrypt_secret_sync_uses_non_json_secret_as_password() {
-        let armored = encrypt_for_server("not json");
+    fn test_build_entry_keeps_a_password_string_that_looks_like_json() {
+        let view = view_of(typed_resource("name", "password-string"), "{}");
 
-        let secret = decrypt_secret_sync(&armored, &server_private_key(), "").unwrap();
-
-        assert_eq!(secret.password.as_deref(), Some("not json"));
-        assert_eq!(secret.raw.as_deref(), Some("not json"));
+        assert_eq!(build_entry(&view).password, "{}");
     }
 
     #[test]
-    fn test_decrypt_secret_sync_parses_json_secret() {
-        let armored = encrypt_for_server(r#"{"password":"p4ss","description":"notes"}"#);
+    fn test_build_entry_never_uses_a_secret_without_password_as_password() {
+        let view = view_of(
+            typed_resource("name", "v5-default"),
+            r#"{"object_type":"PASSBOLT_SECRET_DATA","description":"a note"}"#,
+        );
 
-        let secret = decrypt_secret_sync(&armored, &server_private_key(), "").unwrap();
+        let entry = build_entry(&view);
 
-        assert_eq!(secret.password.as_deref(), Some("p4ss"));
-        assert_eq!(secret.description.as_deref(), Some("notes"));
+        assert_eq!(entry.password, "");
+        assert_eq!(entry.notes, "a note");
     }
 
     #[test]
-    fn test_decrypt_secret_sync_fails_with_wrong_key() {
-        let armored = encrypt_for_server("secret");
+    fn test_decrypt_view_fails_with_wrong_key() {
         let wrong_key = crypto::parse_private_key(METADATA_PRIVATE)
             .unwrap()
             .key
             .clone();
 
-        assert!(decrypt_secret_sync(&armored, &wrong_key, "").is_err());
+        let view = decrypt_view(
+            make_resource("name"),
+            &encrypt_for_server("secret"),
+            &wrong_key,
+            "",
+            &MetadataKeys::default(),
+            &types(),
+        );
+
+        assert!(view.is_err());
     }
 
     #[test]
     fn test_collect_entries_skips_and_counts_decryption_failures() {
         let resources = vec![make_resource("decrypted"), make_resource("broken")];
         let task_results: Vec<TaskResult> = vec![
-            (
-                1,
-                None,
-                Err(anyhow::anyhow!("Failed to decrypt 'broken'")),
-                None,
-            ),
-            (
-                0,
-                None,
-                Ok(SecretData {
-                    password: Some("secret".into()),
-                    ..Default::default()
-                }),
-                None,
-            ),
+            (1, None, Err(anyhow::anyhow!("Failed to decrypt 'broken'"))),
+            (0, None, Ok(view_of(make_resource("decrypted"), "secret"))),
         ];
 
         let (entries, failures) = collect_entries(&resources, task_results);
@@ -880,6 +887,35 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.title, "decrypted");
         assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn test_save_replacing_keeps_the_previous_file_when_writing_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup.kdbx");
+        std::fs::write(&path, "previous backup").unwrap();
+
+        let result = save_replacing(&path, |_| anyhow::bail!("disk full"));
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous backup");
+        assert_eq!(
+            std::fs::read_dir(directory.path()).unwrap().count(),
+            1,
+            "temporary file left"
+        );
+    }
+
+    #[test]
+    fn test_save_replacing_replaces_the_file() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup.kdbx");
+        std::fs::write(&path, "previous backup").unwrap();
+
+        save_replacing(&path, |file| Ok(file.write_all(b"new backup")?)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new backup");
     }
 
     #[test]

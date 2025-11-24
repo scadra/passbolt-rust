@@ -54,6 +54,7 @@ pub fn ada_config() -> SdkConfig {
         tls_client_cert: String::new(),
         tls_client_private_key: String::new(),
         proxy: String::new(),
+        server_public_key: String::new(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
     }

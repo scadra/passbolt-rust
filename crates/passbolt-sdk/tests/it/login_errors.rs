@@ -10,44 +10,17 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use passbolt_sdk::{auth, crypto, AuthError, PassboltError, PassboltSdk};
+use passbolt_sdk::{AuthError, PassboltError, PassboltSdk};
 use rstest::rstest;
 use serde_json::json;
 
 use crate::common::*;
-
-const VERIFY_PATH: &str = "/auth/verify.json";
 
 async fn login_error(fake: &FakePassbolt) -> PassboltError {
     match PassboltSdk::login(fake.clone(), &ada_config(), None, 3).await {
         Ok(_) => panic!("login succeeded"),
         Err(error) => error,
     }
-}
-
-async fn check_ada_server_identity(
-    fake: &FakePassbolt,
-    stored_fingerprint: &str,
-    stored_token: &str,
-) -> Result<(), PassboltError> {
-    let private_key = crypto::parse_private_key(ADA.private).unwrap();
-    auth::check_server_identity(
-        fake,
-        BASE_URL,
-        &private_key,
-        ADA.passphrase,
-        stored_fingerprint,
-        stored_token,
-    )
-    .await
-}
-
-fn fake_verifying_server_with_token(token: &str) -> FakePassbolt {
-    let fake = FakePassbolt::new();
-    let mut verify_response = data::auth_verify(&SERVER);
-    verify_response["challenge"] = ADA.encrypt(token).into();
-    fake.on("GET", VERIFY_PATH, verify_response);
-    fake
 }
 
 #[tokio::test]
@@ -81,90 +54,6 @@ async fn login_reports_a_refused_verification(#[case] status: u16, #[case] serve
         message.contains(&status.to_string()) && message.contains(server_message),
         "{message}"
     );
-}
-
-#[tokio::test]
-async fn server_identity_is_not_checked_without_stored_values() {
-    let fake = FakePassbolt::new();
-
-    check_ada_server_identity(&fake, "", "").await.unwrap();
-
-    assert!(fake.requests_to("GET", VERIFY_PATH).is_empty());
-}
-
-#[tokio::test]
-async fn server_identity_accepts_the_stored_fingerprint() {
-    let fake = fake_verifying_server_with_token("server-token");
-
-    check_ada_server_identity(&fake, &SERVER.fingerprint(), "server-token")
-        .await
-        .unwrap();
-
-    assert_eq!(fake.requests_to("GET", VERIFY_PATH).len(), 1);
-}
-
-#[tokio::test]
-async fn server_identity_rejects_another_fingerprint() {
-    let fake = fake_verifying_server_with_token("server-token");
-
-    let error = check_ada_server_identity(&fake, &BETTY.fingerprint(), "")
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(
-            error,
-            PassboltError::Auth(AuthError::ServerIdentityMismatch(_))
-        ),
-        "{error:?}"
-    );
-}
-
-#[tokio::test]
-async fn server_identity_rejects_another_token() {
-    let fake = fake_verifying_server_with_token("server-token");
-
-    let error = check_ada_server_identity(&fake, "", "stored-token")
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(
-            error,
-            PassboltError::Auth(AuthError::ServerIdentityMismatch(_))
-        ),
-        "{error:?}"
-    );
-}
-
-#[tokio::test]
-async fn server_identity_needs_the_server_fingerprint() {
-    let fake = FakePassbolt::new();
-    fake.on("GET", VERIFY_PATH, json!({}));
-
-    let error = check_ada_server_identity(&fake, &SERVER.fingerprint(), "")
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(error, PassboltError::Auth(AuthError::LoginFailed(_))),
-        "{error:?}"
-    );
-}
-
-#[tokio::test]
-async fn login_goes_on_when_the_server_identity_matches() {
-    let fake = FakePassbolt::new();
-    fake.on("GET", VERIFY_PATH, data::auth_verify(&SERVER));
-    let mut config = ada_config();
-    config.server_verify_enc_token = SERVER.fingerprint();
-
-    let client = PassboltSdk::login(fake.clone(), &config, None, 3)
-        .await
-        .unwrap();
-
-    assert_eq!(client.user_id, ADA_ID);
-    assert_eq!(fake.requests_to("GET", VERIFY_PATH).len(), 1);
 }
 
 #[tokio::test]

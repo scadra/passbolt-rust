@@ -17,7 +17,21 @@ use std::io::{self, IsTerminal};
 /// Read a password from stdin or interactively from the terminal.
 /// If stdin is not a terminal (piped), read the first line from stdin.
 /// Otherwise prompt with `rpassword`.
+///
+/// An empty password is an error: an empty or closed stdin must not become a password.
 pub fn read_password(prompt: &str) -> Result<SecretString> {
+    let password = read_line(prompt)?;
+    non_empty(password)
+}
+
+fn non_empty(password: String) -> Result<SecretString> {
+    if password.is_empty() {
+        anyhow::bail!("Empty password: give one, or pass it with its option");
+    }
+    Ok(SecretString::new(password.into()))
+}
+
+fn read_line(prompt: &str) -> Result<String> {
     if !io::stdin().is_terminal() {
         // Stdin is piped — read a line
         let mut line = String::new();
@@ -28,10 +42,25 @@ pub fn read_password(prompt: &str) -> Result<SecretString> {
             .trim_end_matches('\n')
             .trim_end_matches('\r')
             .to_string();
-        return Ok(SecretString::new(trimmed.into()));
+        return Ok(trimmed);
     }
 
-    let password = rpassword::prompt_password(prompt)
-        .map_err(|error| anyhow::anyhow!("Cannot read password: {error}"))?;
-    Ok(SecretString::new(password.into()))
+    rpassword::prompt_password(prompt)
+        .map_err(|error| anyhow::anyhow!("Cannot read password: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret;
+
+    #[test]
+    fn test_non_empty_refuses_an_empty_password() {
+        assert!(non_empty(String::new()).is_err());
+    }
+
+    #[test]
+    fn test_non_empty_keeps_the_password() {
+        assert_eq!(non_empty("p".into()).unwrap().expose_secret(), "p");
+    }
 }

@@ -102,6 +102,7 @@ fn build_sdk_config(
         tls_client_cert: String::new(),
         tls_client_private_key: String::new(),
         proxy: non_empty(proxy).unwrap_or_default(),
+        server_public_key: String::new(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
     }
@@ -409,16 +410,16 @@ impl PassboltClient {
         Ok(tags.into_iter().map(FfiTag::from).collect())
     }
 
-    /// Add a tag to a resource.
+    /// Add a tag to a resource, keeping its other tags; returns the resource's tags.
     pub fn add_tag_to_resource(
         &self,
         resource_id: String,
         slug: String,
-    ) -> Result<FfiTag, PassboltFfiError> {
-        let tag = RUNTIME
+    ) -> Result<Vec<FfiTag>, PassboltFfiError> {
+        let tags = RUNTIME
             .block_on(self.inner.add_tag_to_resource(&resource_id, &slug))
             .map_err(PassboltFfiError::from)?;
-        Ok(FfiTag::from(tag))
+        Ok(tags.into_iter().map(FfiTag::from).collect())
     }
 
     /// Delete a tag.

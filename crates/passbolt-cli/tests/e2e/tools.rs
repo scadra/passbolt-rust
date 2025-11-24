@@ -16,7 +16,9 @@ use keepass::db::NodeRef;
 use keepass::{Database, DatabaseKey};
 use predicates::str::contains;
 
-use crate::common::{create_folder, create_resource, passbolt, run, unique_name, Cleanup};
+use crate::common::{
+    create_folder, create_resource, passbolt, run, run_json, unique_name, Cleanup,
+};
 
 #[test]
 fn exec_injects_the_password_into_the_environment() {
@@ -28,6 +30,31 @@ fn exec_injects_the_password_into_the_environment() {
         .assert()
         .success()
         .stdout("exec-password");
+}
+
+#[test]
+fn exec_refuses_a_resource_without_a_password() {
+    let resource = Cleanup::new(
+        "resource",
+        &run_json(&[
+            "create",
+            "resource",
+            "--type",
+            "v5-note",
+            "--name",
+            &unique_name("exec-note"),
+            "--note",
+            "not a password",
+        ]),
+    );
+
+    passbolt()
+        .env("E2E_SECRET", format!("passbolt://{}", resource.id))
+        .args(["exec", "--", "/bin/sh", "-c", "printf ran"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(contains("has no password"));
 }
 
 #[test]
@@ -74,7 +101,7 @@ fn writes_still_work_after_verify() {
         .arg("verify")
         .assert()
         .success()
-        .stdout(contains("Fingerprint"));
+        .stdout(contains("pinned"));
 
     // The pre-login verify request is the one receiving the CSRF cookie.
     let output = passbolt()
@@ -93,4 +120,71 @@ fn writes_still_work_after_verify() {
         .clone();
 
     let _folder = Cleanup::new("folder", &serde_json::from_slice(&output).unwrap());
+}
+
+#[test]
+fn verify_pins_the_server_key_and_saves_nothing_else() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    // The credentials come from the environment, as overrides of the empty config file.
+    passbolt()
+        .env("PASSBOLT_CONFIG", &config)
+        .arg("verify")
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        saved.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+        "{saved}"
+    );
+    for variable in [
+        "PASSBOLT_E2E_USER_PASSWORD",
+        "PASSBOLT_E2E_USER_PRIVATE_KEY_FILE",
+    ] {
+        let override_value = std::env::var(variable).unwrap();
+        assert!(
+            !saved.contains(&override_value),
+            "{variable} saved in the config file"
+        );
+    }
+}
+
+#[test]
+fn keepass_export_refuses_an_empty_master_password() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("export.kdbx");
+
+    passbolt()
+        .args([
+            "export",
+            "keepass",
+            "--output",
+            file.to_str().unwrap(),
+            "--password",
+            "",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be empty"));
+
+    assert!(!file.exists());
+}
+
+#[test]
+fn an_empty_piped_password_creates_no_resource() {
+    let name = unique_name("empty");
+
+    passbolt()
+        .args(["create", "resource", "--name", &name])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(contains("Empty password"));
+
+    assert_eq!(
+        run_json(&["list", "resource", "--search", &name]),
+        serde_json::json!([])
+    );
 }

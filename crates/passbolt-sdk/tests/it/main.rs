@@ -28,6 +28,7 @@ mod properties;
 mod requests;
 mod resources;
 mod security;
+mod server_identity;
 mod sharing;
 mod totp;
 mod transport;

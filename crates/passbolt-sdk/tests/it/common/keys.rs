@@ -68,6 +68,14 @@ impl TestKey {
         .unwrap()
     }
 
+    /// Like `decrypt`, `None` when the message is not for this key.
+    pub fn try_decrypt(&self, armored_message: &str) -> Option<String> {
+        let private_key = crypto::parse_private_key(self.private).unwrap();
+        let plaintext =
+            crypto::decrypt_message(armored_message, &private_key.key, self.passphrase).ok()?;
+        String::from_utf8(plaintext).ok()
+    }
+
     pub fn decrypt_json(&self, armored_message: &str) -> Value {
         serde_json::from_str(&self.decrypt(armored_message)).unwrap()
     }

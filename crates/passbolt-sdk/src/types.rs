@@ -64,6 +64,9 @@ pub struct Resource {
     pub secrets: Vec<Secret>,
     #[serde(default)]
     pub permissions: Vec<Permission>,
+    /// With `contain[tag]=1`.
+    #[serde(default)]
+    pub tags: Vec<Tag>,
     /// v5: PGP-armored metadata string; v4: null/absent.
     #[serde(rename = "metadata", default)]
     pub metadata_armored: Option<serde_json::Value>,
@@ -493,8 +496,9 @@ pub struct UpdateResourcePayload {
     pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
+    /// `Some(Value::Null)` empties it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    pub description: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_type_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

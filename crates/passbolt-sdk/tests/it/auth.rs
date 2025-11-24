@@ -106,25 +106,6 @@ async fn login_reports_an_unknown_key() {
 }
 
 #[tokio::test]
-async fn server_identity_mismatch_aborts_before_sending_credentials() {
-    let fake = FakePassbolt::new();
-    fake.on("GET", "/auth/verify.json", data::auth_verify(&SERVER));
-    let mut config = ada_config();
-    config.server_verify_enc_token = BETTY.fingerprint();
-
-    let error = login_error(&fake, &config).await;
-
-    assert!(
-        matches!(
-            error,
-            PassboltError::Auth(AuthError::ServerIdentityMismatch(_))
-        ),
-        "{error:?}"
-    );
-    assert!(fake.requests_to("POST", "/auth/login.json").is_empty());
-}
-
-#[tokio::test]
 async fn logout_sends_the_csrf_token() {
     let fake = FakePassbolt::new();
     let client = login_ada(&fake).await;

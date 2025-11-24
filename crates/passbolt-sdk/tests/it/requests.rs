@@ -97,10 +97,10 @@ async fn move_folder_to_the_root_sends_a_null_parent() {
 }
 
 #[tokio::test]
-async fn update_resource_tags_sends_one_slug_per_tag() {
-    let path = format!("/resources/{RESOURCE_ID}/tags.json");
+async fn update_resource_tags_replaces_them_like_the_browser_extension() {
+    let path = format!("/tags/{RESOURCE_ID}.json");
     let (fake, client) =
-        logged_in_with("PUT", &path, json!([data::tag("prod"), data::tag("ops")])).await;
+        logged_in_with("POST", &path, json!([data::tag("prod"), data::tag("ops")])).await;
 
     let tags = client
         .update_resource_tags(RESOURCE_ID, &["prod".into(), "ops".into()])
@@ -108,24 +108,33 @@ async fn update_resource_tags_sends_one_slug_per_tag() {
         .unwrap();
 
     assert_eq!(
-        fake.body_of("PUT", &path),
-        json!([{ "slug": "prod" }, { "slug": "ops" }])
+        fake.body_of("POST", &path),
+        json!({ "tags": ["prod", "ops"] })
     );
     assert_eq!(tags.len(), 2);
 }
 
 #[tokio::test]
-async fn add_tag_to_resource_posts_the_slug() {
+async fn add_tag_to_resource_keeps_the_other_tags() {
     let path = format!("/tags/{RESOURCE_ID}.json");
-    let (fake, client) = logged_in_with("POST", &path, data::tag("prod")).await;
+    let (fake, client) =
+        logged_in_with("POST", &path, json!([data::tag("ops"), data::tag("prod")])).await;
+    let mut resource = data::resource_v4("password-string", "p");
+    resource["tags"] = json!([data::tag("ops")]);
+    fake.on("GET", &resource_path(), resource);
 
-    let tag = client
+    let tags = client
         .add_tag_to_resource(RESOURCE_ID, "prod")
         .await
         .unwrap();
 
-    assert_eq!(fake.body_of("POST", &path), json!({ "slug": "prod" }));
-    assert_eq!(tag.slug, "prod");
+    assert_eq!(
+        fake.body_of("POST", &path),
+        json!({ "tags": ["ops", "prod"] })
+    );
+    assert_eq!(tags.len(), 2);
+    let read = &fake.requests_to("GET", &resource_path())[0];
+    assert_eq!(read.query_value("contain[tag]").as_deref(), Some("1"));
 }
 
 #[tokio::test]
