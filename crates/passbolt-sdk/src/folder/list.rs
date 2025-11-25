@@ -25,23 +25,14 @@ pub async fn list_folders<H: HttpClient>(
     parent_folder_ids: Vec<String>,
     filters: &[Filter],
 ) -> Result<Vec<Folder>> {
-    let query = FolderQuery {
-        search,
-        group_id: group_ids.first().cloned(),
-        parent_folder_id: parent_folder_ids.first().cloned(),
-        ..Default::default()
-    };
-    let mut folders = client.get_folders(query).await?;
-
-    // Client-side filter for additional parent folder IDs (API only supports one at a time)
-    if parent_folder_ids.len() > 1 {
-        folders.retain(|folder| {
-            folder
-                .folder_parent_id
-                .as_deref()
-                .is_some_and(|parent_id| parent_folder_ids.iter().any(|id| id == parent_id))
-        });
-    }
+    let folders = client
+        .get_folders(FolderQuery {
+            search,
+            group_id: group_ids.first().cloned(),
+            parent_folder_ids,
+            ..Default::default()
+        })
+        .await?;
 
     Ok(filter_folders(folders, filters))
 }

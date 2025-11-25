@@ -62,6 +62,9 @@ pub struct Resource {
     pub favorite: Option<Favorite>,
     #[serde(default)]
     pub secrets: Vec<Secret>,
+    /// The user's own permission, with `contain[permission]=1`.
+    #[serde(default)]
+    pub permission: Option<Permission>,
     #[serde(default)]
     pub permissions: Vec<Permission>,
     /// With `contain[tag]=1`.
@@ -306,6 +309,9 @@ pub struct Folder {
     pub modified_by: Option<String>,
     #[serde(default)]
     pub personal: Option<bool>,
+    /// The user's own permission, with `contain[permission]=1`.
+    #[serde(default)]
+    pub permission: Option<Permission>,
     #[serde(default)]
     pub permissions: Vec<Permission>,
 }

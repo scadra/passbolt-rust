@@ -160,6 +160,18 @@ impl FakePassbolt {
         self.route(method, path, status, message, Value::Null);
     }
 
+    /// Answer `method path` with an error envelope carrying `body`, as validation errors do.
+    pub fn on_error_with_body(
+        &self,
+        method: &'static str,
+        path: &str,
+        status: u16,
+        message: &str,
+        body: Value,
+    ) {
+        self.route(method, path, status, message, body);
+    }
+
     fn route(&self, method: &'static str, path: &str, status: u16, message: &str, body: Value) {
         let mut state = self.state.lock().unwrap();
         state

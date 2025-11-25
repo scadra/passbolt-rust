@@ -104,6 +104,7 @@ mod tests {
             created_by: None,
             modified_by: None,
             personal: None,
+            permission: None,
             permissions: Vec::new(),
         }
     }

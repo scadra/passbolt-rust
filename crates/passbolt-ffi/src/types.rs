@@ -1021,7 +1021,7 @@ mod tests {
 
         assert_eq!(query.search.as_deref(), Some("ops"));
         assert_eq!(query.group_id, None);
-        assert_eq!(query.parent_folder_id, None);
+        assert_eq!(query.parent_folder_ids, Vec::<String>::new());
         assert_eq!(query.pagination.page, None);
     }
 

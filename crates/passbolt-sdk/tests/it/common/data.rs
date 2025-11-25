@@ -107,6 +107,11 @@ pub fn metadata_keys_settings() -> Value {
     fixture!("metadata_keys_settings.json")
 }
 
+/// The 400 body of `DELETE /users/{id}/dry-run.json` for a sole owner and manager.
+pub fn user_delete_blockers() -> Value {
+    fixture!("user_delete_dry_run_errors.json")
+}
+
 /// Decrypted v5-default secret, from `secret_v5_default.json`.
 pub fn secret_v5_default() -> Value {
     fixture!("secret_v5_default.json")
