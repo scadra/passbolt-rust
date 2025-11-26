@@ -264,3 +264,28 @@ fn sharing_with_an_unknown_user_fails() {
         .assert()
         .failure();
 }
+
+#[test]
+fn sharing_a_folder_with_its_content_shares_its_resources() {
+    let folder = create_folder(&unique_name("content"), &[]);
+    let resource = create_resource(
+        &unique_name("in-folder"),
+        "folder-content-password",
+        &["--type", "v5-default", "--folder-parent-id", &folder.id],
+    );
+
+    run(&[
+        "share",
+        "folder",
+        "--id",
+        &folder.id,
+        "--type",
+        "1",
+        "--user",
+        &admin_id(),
+        "--with-content",
+    ]);
+
+    let as_recipient = run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
+    assert_eq!(as_recipient["password"], "folder-content-password");
+}

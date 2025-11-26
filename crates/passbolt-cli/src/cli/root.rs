@@ -519,6 +519,9 @@ pub enum ShareEntity {
         user: Vec<String>,
         #[arg(short = 'g', long)]
         group: Vec<String>,
+        /// Also change the sub-folders and resources you own, as the browser extension does
+        #[arg(long)]
+        with_content: bool,
     },
 }
 

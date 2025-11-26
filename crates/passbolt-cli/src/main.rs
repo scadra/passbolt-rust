@@ -828,9 +828,17 @@ async fn dispatch(
                 r#type,
                 user,
                 group,
+                with_content,
             } => {
-                passbolt_sdk::folder::share::share_folder(client, id, user, group, *r#type, false)
-                    .await?;
+                passbolt_sdk::folder::share::share_folder(
+                    client,
+                    id,
+                    user,
+                    group,
+                    *r#type,
+                    *with_content,
+                )
+                .await?;
                 println!("Shared folder {id}");
             }
         },
