@@ -32,34 +32,58 @@ pub async fn share_resource<H: HttpClient>(
     group_ids: &[String],
     permission_type: i32,
 ) -> Result<(), PassboltError> {
+    let changed = change_permissions(client, id, user_ids, group_ids, permission_type).await?;
+    if !changed && permission_type == -1 {
+        return Err(PassboltError::InvalidArgument(
+            "No matching permissions found to revoke for the given users/groups".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The work of [`share_resource`]; `false` when the permissions are already as asked.
+pub(crate) async fn change_permissions<H: HttpClient>(
+    client: &PassboltSdk<H>,
+    id: &str,
+    user_ids: &[String],
+    group_ids: &[String],
+    permission_type: i32,
+) -> Result<bool, PassboltError> {
     let existing = client.get_resource_permissions(id).await?;
     if permission_type == -1 {
         let permissions = build_revoke_changes(&existing, user_ids, group_ids);
         if permissions.is_empty() {
-            return Err(PassboltError::InvalidArgument(
-                "No matching permissions found to revoke for the given users/groups".into(),
-            ));
+            return Ok(false);
         }
         let payload = SharePayload {
             permissions,
             secrets: None,
         };
-        return client.share_resource(id, &payload).await;
+        client.share_resource(id, &payload).await?;
+        return Ok(true);
     }
 
-    let aros = user_ids
+    let permissions = merge_changes(&existing, aros(user_ids, group_ids), permission_type);
+    if permissions.is_empty() {
+        return Ok(false);
+    }
+    apply_changes(client, id, permissions).await?;
+    Ok(true)
+}
+
+/// `(aro, id)` of the users then the groups.
+pub(crate) fn aros<'a>(
+    user_ids: &'a [String],
+    group_ids: &'a [String],
+) -> impl Iterator<Item = (&'a str, &'a str)> {
+    user_ids
         .iter()
         .map(|user_id| ("User", user_id.as_str()))
         .chain(
             group_ids
                 .iter()
                 .map(|group_id| ("Group", group_id.as_str())),
-        );
-    let permissions = merge_changes(&existing, aros, permission_type);
-    if permissions.is_empty() {
-        return Ok(());
-    }
-    apply_changes(client, id, permissions).await
+        )
 }
 
 /// Give the resource the permissions of `folder_id`, as the browser extension does when
@@ -120,7 +144,7 @@ async fn apply_changes<H: HttpClient>(
 }
 
 /// A change per `(aro, id)`: an update of its existing permission, or a new one.
-fn merge_changes<'a>(
+pub(crate) fn merge_changes<'a>(
     existing: &[Permission],
     aros: impl Iterator<Item = (&'a str, &'a str)>,
     permission_type: i32,

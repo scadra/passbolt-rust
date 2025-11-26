@@ -35,36 +35,105 @@ fn single_request(fake: &FakePassbolt, method: &str, path: &str) -> RecordedRequ
     requests[0].clone()
 }
 
+const OTHER_RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e2";
+
 #[tokio::test]
-async fn delete_resources_sends_the_ids_with_the_csrf_token() {
-    let (fake, client) = logged_in_with("DELETE", "/resources.json", Value::Null).await;
+async fn delete_resources_deletes_them_one_by_one_as_the_api_has_no_bulk_delete() {
+    let (fake, client) = logged_in_with("DELETE", &resource_path(), Value::Null).await;
+    fake.on(
+        "DELETE",
+        &format!("/resources/{OTHER_RESOURCE_ID}.json"),
+        Value::Null,
+    );
 
     client
-        .delete_resources(&["r1".into(), "r2".into()])
+        .delete_resources(&[RESOURCE_ID.into(), OTHER_RESOURCE_ID.into()])
         .await
         .unwrap();
 
-    let request = single_request(&fake, "DELETE", "/resources.json");
-    assert_eq!(request.json_body(), &json!({ "ids": ["r1", "r2"] }));
+    let request = single_request(&fake, "DELETE", &resource_path());
     assert_eq!(request.header("X-CSRF-Token"), Some(CSRF_TOKEN));
+    single_request(
+        &fake,
+        "DELETE",
+        &format!("/resources/{OTHER_RESOURCE_ID}.json"),
+    );
+    assert!(fake.requests_to("DELETE", "/resources.json").is_empty());
 }
 
 #[tokio::test]
-async fn delete_resources_reports_the_server_message() {
+async fn delete_resources_stops_at_the_first_failure() {
     let fake = FakePassbolt::new();
-    fake.on_error_saying("DELETE", "/resources.json", 400, "Invalid ids.");
+    fake.on_error_saying(
+        "DELETE",
+        &resource_path(),
+        404,
+        "The resource does not exist.",
+    );
     let client = login_ada(&fake).await;
 
-    let error = client.delete_resources(&["r1".into()]).await.unwrap_err();
+    let error = client
+        .delete_resources(&[RESOURCE_ID.into(), OTHER_RESOURCE_ID.into()])
+        .await
+        .unwrap_err();
 
-    let PassboltError::Api(ApiError {
-        status, message, ..
-    }) = error
-    else {
-        panic!("{error:?}")
-    };
-    assert_eq!(status, 400);
-    assert!(message.contains("Invalid ids."), "{message}");
+    assert!(
+        matches!(error, PassboltError::Api(ApiError { status: 404, .. })),
+        "{error:?}"
+    );
+    assert!(fake
+        .requests_to("DELETE", &format!("/resources/{OTHER_RESOURCE_ID}.json"))
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_user_that_can_be_deleted_has_no_blocker() {
+    let path = format!("/users/{BETTY_ID}/dry-run.json");
+    let (fake, client) = logged_in_with("DELETE", &path, Value::Null).await;
+
+    let dry_run = client.delete_user_dry_run(BETTY_ID).await.unwrap();
+
+    single_request(&fake, "DELETE", &path);
+    assert_eq!(
+        dry_run.resources_sole_owner_count + dry_run.groups_sole_manager_count,
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_user_dry_run_counts_what_blocks_the_deletion() {
+    let path = format!("/users/{BETTY_ID}/dry-run.json");
+    let fake = FakePassbolt::new();
+    fake.on_error_with_body(
+        "DELETE",
+        &path,
+        400,
+        "The user cannot be deleted.",
+        data::user_delete_blockers(),
+    );
+    let client = login_ada(&fake).await;
+
+    let dry_run = client.delete_user_dry_run(BETTY_ID).await.unwrap();
+
+    assert_eq!(
+        (
+            dry_run.resources_sole_owner_count,
+            dry_run.folders_sole_owner_count,
+            dry_run.groups_sole_manager_count
+        ),
+        (2, 0, 1)
+    );
+}
+
+#[tokio::test]
+async fn a_group_dry_run_is_a_delete() {
+    let path = format!("/groups/{GROUP_ID}/dry-run.json");
+    let (fake, client) = logged_in_with("DELETE", &path, json!([])).await;
+
+    let dry_run = client.delete_group_dry_run(GROUP_ID).await.unwrap();
+
+    single_request(&fake, "DELETE", &path);
+    assert_eq!(dry_run.resources_sole_group_count, 0);
 }
 
 #[tokio::test]
@@ -340,7 +409,7 @@ async fn get_users_sends_every_filter() {
         Some("ada")
     );
     assert_eq!(
-        request.query_value("filter[is-in-group]").as_deref(),
+        request.query_value("filter[has-groups]").as_deref(),
         Some(GROUP_ID)
     );
     assert_eq!(
@@ -371,15 +440,23 @@ async fn get_users_without_filters_only_asks_for_the_contained_data() {
 }
 
 #[tokio::test]
-async fn get_folders_sends_every_filter() {
-    let (fake, client) =
-        logged_in_with("GET", "/folders.json", json!([data::folder(json!([]))])).await;
+async fn get_folders_sends_the_filters_the_api_has() {
+    let mut other_folder = data::folder(json!([]));
+    other_folder["id"] = "5f6e7d8c-0000-4000-8000-0000000000f2".into();
+    let shared_with_the_group =
+        data::folder(json!([data::permission("p-ops", "Group", GROUP_ID, 1)]));
+    let (fake, client) = logged_in_with(
+        "GET",
+        "/folders.json",
+        json!([shared_with_the_group, other_folder]),
+    )
+    .await;
 
     let folders = client
         .get_folders(FolderQuery {
             search: Some("ops".into()),
             group_id: Some(GROUP_ID.into()),
-            parent_folder_id: Some(FOLDER_ID.into()),
+            parent_folder_ids: vec![FOLDER_ID.into(), "parent-2".into()],
             ..Default::default()
         })
         .await
@@ -391,16 +468,20 @@ async fn get_folders_sends_every_filter() {
         Some("ops")
     );
     assert_eq!(
-        request
-            .query_value("filter[is-shared-with-group]")
-            .as_deref(),
-        Some(GROUP_ID)
+        request.query_values("filter[has-parent][]"),
+        [FOLDER_ID, "parent-2"]
     );
     assert_eq!(
-        request.query_value("filter[has-parent]").as_deref(),
-        Some(FOLDER_ID)
+        request.query_value("filter[is-shared-with-group]"),
+        None,
+        "not an API filter"
     );
-    assert_eq!(folders[0].id, FOLDER_ID);
+    let ids: Vec<&str> = folders.iter().map(|folder| folder.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [FOLDER_ID],
+        "the group filter applies to the permissions"
+    );
 }
 
 #[tokio::test]

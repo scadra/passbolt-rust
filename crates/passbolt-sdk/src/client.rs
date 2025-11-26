@@ -77,6 +77,14 @@ fn parse_secret(plaintext: Vec<u8>) -> Result<SecretData, PassboltError> {
     )
 }
 
+/// The number of items at `pointer` in `value`.
+fn count(value: &Value, pointer: &str) -> u32 {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_array)
+        .map_or(0, |items| u32::try_from(items.len()).unwrap_or(u32::MAX))
+}
+
 fn server_message(response: &HttpResponse) -> String {
     serde_json::from_slice::<Value>(&response.body)
         .ok()
@@ -391,31 +399,6 @@ impl<H: HttpClient> PassboltSdk<H> {
     async fn delete_request(&self, path: &str) -> Result<(), PassboltError> {
         let url = format!("{}{path}", self.base_url);
         let response = self.send(Method::Delete, &url, None).await?;
-
-        if response.status >= 400 {
-            let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-            let message = body
-                .pointer("/header/message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("Unknown error");
-            return Err(ApiError {
-                status: response.status,
-                message: format!("DELETE {path} failed: {message}"),
-                validation_errors: None,
-            }
-            .into());
-        }
-        Ok(())
-    }
-
-    async fn delete_request_with_body(
-        &self,
-        path: &str,
-        body: &Value,
-    ) -> Result<(), PassboltError> {
-        let url = format!("{}{path}", self.base_url);
-        let json_body = serde_json::to_vec(body)?;
-        let response = self.send(Method::Delete, &url, Some(&json_body)).await?;
 
         if response.status >= 400 {
             let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
@@ -896,20 +879,31 @@ impl<H: HttpClient> PassboltSdk<H> {
     // ── Folders ───────────────────────────────────────────────────────────────
 
     pub async fn get_folders(&self, options: FolderQuery) -> Result<Vec<Folder>, PassboltError> {
-        let mut params: Vec<(&str, String)> = vec![("contain[permissions]", "1".into())];
+        let mut params: Vec<(&str, String)> = vec![
+            ("contain[permission]", "1".into()),
+            ("contain[permissions]", "1".into()),
+        ];
 
         if let Some(search) = options.search {
             params.push(("filter[search]", search));
         }
-        if let Some(group_id) = options.group_id {
-            params.push(("filter[is-shared-with-group]", group_id));
-        }
-        if let Some(parent_folder_id) = options.parent_folder_id {
-            params.push(("filter[has-parent]", parent_folder_id));
+        for parent_folder_id in options.parent_folder_ids {
+            params.push(("filter[has-parent][]", parent_folder_id));
         }
 
-        self.get_paginated("/folders.json", &params, &options.pagination)
-            .await
+        let mut folders: Vec<Folder> = self
+            .get_paginated("/folders.json", &params, &options.pagination)
+            .await?;
+        // The folders index has no group filter: keep the folders the group has a permission on.
+        if let Some(group_id) = options.group_id {
+            folders.retain(|folder| {
+                folder.permissions.iter().any(|permission| {
+                    permission.aro.as_deref() == Some("Group")
+                        && permission.aro_foreign_key.as_deref() == Some(group_id.as_str())
+                })
+            });
+        }
+        Ok(folders)
     }
 
     pub async fn get_folder(&self, id: &str) -> Result<Folder, PassboltError> {
@@ -963,7 +957,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             params.push(("filter[search]", search));
         }
         if let Some(group_id) = options.group_id {
-            params.push(("filter[is-in-group]", group_id));
+            params.push(("filter[has-groups]", group_id));
         }
         if let Some(resource_id) = options.resource_id {
             params.push(("filter[has-access]", resource_id));
@@ -1198,10 +1192,13 @@ impl<H: HttpClient> PassboltSdk<H> {
     // ── Bulk Delete ──────────────────────────────────────────────────────────
 
     /// Delete multiple resources at once.
+    /// Delete resources one by one, as the browser extension does: the API has no bulk delete.
+    /// Stops at the first failure; the resources before it are deleted.
     pub async fn delete_resources(&self, ids: &[String]) -> Result<(), PassboltError> {
-        let body = serde_json::json!({ "ids": ids });
-        self.delete_request_with_body("/resources.json", &body)
-            .await
+        for id in ids {
+            self.delete_resource(id).await?;
+        }
+        Ok(())
     }
 
     // ── Find Resources by IDs ────────────────────────────────────────────────
@@ -1354,7 +1351,14 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// and groups where they are sole manager.
     pub async fn delete_user_dry_run(&self, id: &str) -> Result<UserDeleteDryRun, PassboltError> {
         let id = uuid_segment(id)?;
-        self.get(&format!("/users/{id}/dry-run.json")).await
+        let blockers = self
+            .delete_dry_run(&format!("/users/{id}/dry-run.json"))
+            .await?;
+        Ok(UserDeleteDryRun {
+            resources_sole_owner_count: count(&blockers, "/resources/sole_owner"),
+            folders_sole_owner_count: count(&blockers, "/folders/sole_owner"),
+            groups_sole_manager_count: count(&blockers, "/groups/sole_manager"),
+        })
     }
 
     /// Preview the impact of deleting a group.
@@ -1362,7 +1366,32 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// Returns counts of resources/folders where the group is sole accessor.
     pub async fn delete_group_dry_run(&self, id: &str) -> Result<GroupDeleteDryRun, PassboltError> {
         let id = uuid_segment(id)?;
-        self.get(&format!("/groups/{id}/dry-run.json")).await
+        let blockers = self
+            .delete_dry_run(&format!("/groups/{id}/dry-run.json"))
+            .await?;
+        Ok(GroupDeleteDryRun {
+            resources_sole_group_count: count(&blockers, "/resources/sole_owner"),
+            folders_sole_group_count: count(&blockers, "/folders/sole_owner"),
+        })
+    }
+
+    /// `DELETE …/dry-run.json`: what blocks the deletion, from the 400 `body.errors`; `null` if nothing.
+    async fn delete_dry_run(&self, path: &str) -> Result<Value, PassboltError> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self.send(Method::Delete, &url, None).await?;
+        let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+        match response.status {
+            status if status < 400 => Ok(Value::Null),
+            400 if body.pointer("/body/errors").is_some() => {
+                Ok(body.pointer("/body/errors").cloned().unwrap_or(Value::Null))
+            }
+            status => Err(ApiError {
+                status,
+                message: server_message(&response),
+                validation_errors: None,
+            }
+            .into()),
+        }
     }
 
     // ── Metadata Settings ────────────────────────────────────────────────────
@@ -1446,8 +1475,10 @@ pub struct ResourceQuery {
 #[derive(Debug, Default)]
 pub struct FolderQuery {
     pub search: Option<String>,
+    /// Folders the group has a permission on.
     pub group_id: Option<String>,
-    pub parent_folder_id: Option<String>,
+    /// Folders directly in any of these folders.
+    pub parent_folder_ids: Vec<String>,
     pub pagination: PaginationParams,
 }
 

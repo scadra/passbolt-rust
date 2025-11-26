@@ -564,6 +564,7 @@ mod tests {
             personal: None,
             favorite: None,
             secrets: vec![],
+            permission: None,
             permissions: vec![],
             tags: vec![],
             metadata_armored: None,
@@ -583,6 +584,7 @@ mod tests {
             created_by: None,
             modified_by: None,
             personal: None,
+            permission: None,
             permissions: vec![],
         }
     }
