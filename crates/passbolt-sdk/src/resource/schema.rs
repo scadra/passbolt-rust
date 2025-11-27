@@ -267,6 +267,10 @@ mod tests {
     #[case::any_of_null(uris_schema(), json!([null, "ab"]), "")]
     #[case::any_of_item(uris_schema(), json!(["abcdef"]), "[0] does not match")]
     #[case::max_items(uris_schema(), json!(["a", "b", "c"]), "more than 2 items")]
+    #[case::min_length(json!({"type": "string", "minLength": 4}), json!("123"), "shorter than 4")]
+    #[case::maximum(json!({"type": "number", "maximum": 8}), json!(9), "at most 8")]
+    #[case::invalid_pattern(json!({"type": "string", "pattern": "("}), json!("x"), "invalid schema pattern")]
+    #[case::object_without_properties(json!({"type": "object"}), json!({"any": 1}), "")]
     fn test_validate(#[case] schema: Value, #[case] value: Value, #[case] expected_error: &str) {
         let result = validate(&schema, &value);
 

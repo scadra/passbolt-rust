@@ -151,7 +151,12 @@ pub async fn update_resource<H: HttpClient>(
         let field = |name: &str| fields.get(name).and_then(Value::as_str).map(String::from);
         payload.name = field("name");
         payload.username = field("username");
-        payload.uri = field("uri");
+        // `null` empties a URI the changes removed.
+        payload.uri = match field("uri") {
+            Some(uri) => Some(uri.into()),
+            None if changes.uris.is_some() => Some(Value::Null),
+            None => None,
+        };
         // `null` empties the clear description that moved to the secret.
         payload.description = match moved_description {
             Some(_) => Some(Value::Null),

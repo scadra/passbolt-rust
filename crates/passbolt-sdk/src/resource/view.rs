@@ -49,6 +49,9 @@ pub struct ResourceView {
     /// The decrypted secret; a `password-string` secret as `{"password": …}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<Map<String, Value>>,
+    /// Why the metadata or the secret could not be decrypted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(skip)]
     pub resource: Resource,
 }
@@ -110,6 +113,7 @@ impl ResourceView {
             metadata: fields,
             password: None,
             secret: None,
+            error: None,
             resource,
         })
     }
@@ -136,6 +140,13 @@ impl ResourceView {
         }
         self.secret = Some(secret);
         Ok(self)
+    }
+
+    /// Record why the resource could not be decrypted.
+    #[must_use]
+    pub fn with_error(mut self, error: &PassboltError) -> Self {
+        self.error = Some(error.to_string());
+        self
     }
 
     #[must_use]
@@ -197,4 +208,75 @@ pub(crate) fn v4_fields(resource: &Resource) -> Map<String, Value> {
         }
     }
     fields
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn view(slug: Option<&str>, metadata: Option<Value>) -> ResourceView {
+        let mut resource = json!({"id": "r1", "name": "GitHub"});
+        if let Some(slug) = slug {
+            resource["resource_type_id"] = format!("{slug}-id").into();
+        }
+        if metadata.is_some() {
+            resource["metadata"] = "-----BEGIN PGP MESSAGE-----".into();
+        }
+        let types: Vec<ResourceType> = ["password-string", "v5-default"]
+            .into_iter()
+            .map(|slug| ResourceType {
+                id: format!("{slug}-id"),
+                slug: slug.into(),
+                name: None,
+                definition: None,
+            })
+            .collect();
+        let metadata = metadata.map(|metadata| serde_json::from_value(metadata).unwrap());
+        ResourceView::new(serde_json::from_value(resource).unwrap(), metadata, &types).unwrap()
+    }
+
+    #[test]
+    fn test_a_password_string_secret_is_the_password_even_as_json() {
+        let view = view(Some("password-string"), None)
+            .with_secret("{}")
+            .unwrap();
+
+        assert_eq!(view.password.as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn test_a_secret_of_an_unknown_type_is_read_as_json() {
+        let view = view(None, None).with_secret(r#"{"password":"p"}"#).unwrap();
+
+        assert_eq!(view.password.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn test_a_v4_description_in_the_secret_is_not_a_note() {
+        let view = view(Some("password-string"), None)
+            .with_secret("p")
+            .unwrap();
+
+        assert_eq!(view.note(), None);
+    }
+
+    #[test]
+    fn test_the_v5_secret_description_is_the_note() {
+        let metadata = json!({"object_type": "PASSBOLT_RESOURCE_METADATA", "name": "GitHub"});
+        let view = view(Some("v5-default"), Some(metadata))
+            .with_secret(r#"{"password":"p","description":"a note"}"#)
+            .unwrap();
+
+        assert_eq!(view.note(), Some("a note"));
+        assert_eq!(view.description, "");
+    }
+
+    #[test]
+    fn test_with_error_keeps_the_reason() {
+        let view = view(None, None).with_error(&PassboltError::Other("no key".into()));
+
+        assert_eq!(view.error.as_deref(), Some("no key"));
+    }
 }

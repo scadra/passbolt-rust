@@ -21,7 +21,7 @@ use crate::resource::view::ResourceView;
 /// (decryption threads, 0 for one per CPU).
 ///
 /// `query.search` and `filters` apply to the decrypted fields: the server cannot search
-/// encrypted v5 names.
+/// encrypted v5 names. A resource that cannot be decrypted is listed with its `error`.
 pub async fn list_resources<H: HttpClient>(
     client: &PassboltSdk<H>,
     query: ResourceQuery,
@@ -31,7 +31,6 @@ pub async fn list_resources<H: HttpClient>(
     let search = query.search.clone();
     let resources = client.get_resources(query).await?;
     let resource_types = client.resource_types().await?;
-    let mut metadatas = client.decrypt_metadata_batch(&resources).await?;
     let mut secrets = match secret_workers {
         Some(workers) => {
             client
@@ -41,12 +40,19 @@ pub async fn list_resources<H: HttpClient>(
         None => std::collections::HashMap::default(),
     };
     let mut views = Vec::with_capacity(resources.len());
+    // As the browser extension: a resource that does not decrypt is listed with its error.
     for resource in resources {
         let id = resource.id.clone();
-        let mut view = ResourceView::new(resource, metadatas.remove(&id), &resource_types)?;
-        if let Some(secret) = secrets.remove(&id) {
-            view = view.with_secret(&secret)?;
-        }
+        let metadata = client.decrypt_resource_metadata(&resource).await;
+        let view = match metadata {
+            Ok(metadata) => ResourceView::new(resource, metadata, &resource_types)?,
+            Err(error) => ResourceView::new(resource, None, &resource_types)?.with_error(&error),
+        };
+        let view = match secrets.remove(&id) {
+            Some(Ok(secret)) if view.error.is_none() => view.with_secret(&secret)?,
+            Some(Err(error)) if view.error.is_none() => view.with_error(&error),
+            _ => view,
+        };
         views.push(view);
     }
     if let Some(search) = search {

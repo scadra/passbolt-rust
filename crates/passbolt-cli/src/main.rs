@@ -472,6 +472,14 @@ async fn dispatch(
                     secret_workers,
                 )
                 .await?;
+                for view in &views {
+                    if let Some(error) = &view.error {
+                        eprintln!(
+                            "Warning: resource {} could not be decrypted: {error}",
+                            view.id
+                        );
+                    }
+                }
 
                 if json_output {
                     if columns.is_empty() {

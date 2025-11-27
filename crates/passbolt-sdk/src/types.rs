@@ -140,15 +140,18 @@ pub struct MetadataPrivateKeyShare {
 /// Decrypted v5 `metadata`, the `PASSBOLT_RESOURCE_METADATA` object.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceMetadata {
+    // Absent fields stay absent: a type without `username` must not get `username: null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_type_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uris: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// `{type, value, background_color}`, every field optional; kept as written.
@@ -500,8 +503,9 @@ pub struct UpdateResourcePayload {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// `Some(Value::Null)` empties it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
+    pub uri: Option<serde_json::Value>,
     /// `Some(Value::Null)` empties it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<serde_json::Value>,
@@ -839,6 +843,30 @@ pub struct FolderTreeNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_metadata_settings_default_like_the_server() {
+        let settings = MetadataSettings::default();
+
+        assert!(!settings.types.creates_v5_resources_by_default());
+        assert!(!settings.types.allows_resource_creation(true));
+        assert!(settings.types.allows_resource_creation(false));
+        assert!(settings.keys.allows_personal_keys());
+    }
+
+    #[test]
+    fn test_an_unknown_resource_type_has_no_schema() {
+        let resource_type = ResourceType {
+            id: "t1".into(),
+            slug: "v6-unknown".into(),
+            name: None,
+            definition: None,
+        };
+
+        assert!(resource_type.resource_schema().is_none());
+        assert!(!resource_type.secret_is_string());
+        assert!(!resource_type.resource_has_field("name"));
+    }
 
     // ─── User ────────────────────────────────────────────────────────────────
 
