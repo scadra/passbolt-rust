@@ -463,3 +463,64 @@ async fn sharing_a_folder_with_its_content_shares_what_the_user_owns() {
         "the folder and its owned child"
     );
 }
+
+#[tokio::test]
+async fn sharing_with_the_permission_already_given_sends_nothing() {
+    let fake = fake_serving_shareable_resource(
+        r#"{"password":"p"}"#,
+        ada_owner_betty_reader_permissions(),
+    );
+    let client = login_ada(&fake).await;
+
+    share_with(&client, &[BETTY_ID], &[], 1).await.unwrap();
+
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+    assert!(fake
+        .requests_to(
+            "POST",
+            &format!("/share/simulate/resource/{RESOURCE_ID}.json")
+        )
+        .is_empty());
+}
+
+#[tokio::test]
+async fn sharing_shared_v5_metadata_leaves_the_resource_untouched() {
+    let fake = FakePassbolt::new();
+    fake.with_directory();
+    let resource = data::resource_v5_with_secret(
+        "v5-default",
+        &data::metadata("GitHub"),
+        (&METADATA, "shared_key", "mk1"),
+        r#"{"object_type":"PASSBOLT_SECRET_DATA","password":"p"}"#,
+    );
+    fake.on("GET", &resource_path(), resource);
+    fake.on(
+        "GET",
+        &format!("/permissions/resource/{RESOURCE_ID}.json"),
+        ada_owner_permissions(),
+    );
+    fake.on("PUT", &share_path(), Value::Null);
+    let client = login_ada(&fake).await;
+
+    share_with(&client, &[BETTY_ID], &[], 1).await.unwrap();
+
+    assert!(fake.requests_to("PUT", &resource_path()).is_empty());
+    assert_eq!(fake.requests_to("PUT", &share_path()).len(), 1);
+}
+
+#[tokio::test]
+async fn revoking_a_group_deletes_its_permission() {
+    let permissions = json!([
+        data::permission("p-ada", "User", ADA_ID, 15),
+        data::permission("p-ops", "Group", GROUP_ID, 1)
+    ]);
+    let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, permissions);
+    let client = login_ada(&fake).await;
+
+    share_with(&client, &[], &[GROUP_ID], -1).await.unwrap();
+
+    assert_eq!(
+        fake.body_of("PUT", &share_path())["permissions"],
+        json!([{ "id": "p-ops", "aro": "Group", "aro_foreign_key": GROUP_ID, "delete": true }])
+    );
+}

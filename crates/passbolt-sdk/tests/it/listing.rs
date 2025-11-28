@@ -155,3 +155,63 @@ async fn a_resource_view_holds_the_metadata_and_the_secret() {
         "ada-account"
     );
 }
+
+#[tokio::test]
+async fn a_resource_that_does_not_decrypt_is_listed_with_its_error() {
+    let fake = fake_serving_v4_and_v5();
+    let mut resources = data::listed_resources(&[RESOURCE_ID]);
+    let mut foreign =
+        data::resource_v5(&data::metadata("Foreign"), &BETTY, "user_key", "betty-key");
+    foreign.id = "7a5b2c30-0000-4000-8000-0000000000e3".into();
+    resources
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::to_value(foreign).unwrap());
+    fake.on("GET", "/resources.json", resources);
+
+    let views = list(&fake, ResourceQuery::default(), &[], None).await;
+
+    assert_eq!(views.len(), 2);
+    assert!(views[0].error.is_none());
+    assert!(
+        views[1]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("metadata")),
+        "{:?}",
+        views[1].error
+    );
+}
+
+#[tokio::test]
+async fn search_and_filters_combine_and_a_password_filter_reads_secrets() {
+    let fake = fake_serving_v4_and_v5();
+    let filter = Filter::parse("password=v5-password").unwrap();
+
+    let views = list(
+        &fake,
+        ResourceQuery {
+            search: Some("git".into()),
+            ..ResourceQuery::default()
+        },
+        &[filter],
+        Some(1),
+    )
+    .await;
+
+    assert_eq!(names(&views), ["GitLab"]);
+}
+
+#[tokio::test]
+async fn a_password_string_that_looks_like_json_is_a_password() {
+    let fake = FakePassbolt::new();
+    let client = login_ada(&fake).await;
+    let resource = data::resource("password-string", r#"{"password":"not this"}"#);
+
+    let secret = client.decrypt_resource_secret(&resource).await.unwrap();
+
+    assert_eq!(
+        secret.password.as_deref(),
+        Some(r#"{"password":"not this"}"#)
+    );
+}
