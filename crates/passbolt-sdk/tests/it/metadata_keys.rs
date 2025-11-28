@@ -148,3 +148,32 @@ async fn rejects_a_share_that_is_not_a_metadata_private_key() {
         "{error:?}"
     );
 }
+
+#[tokio::test]
+async fn an_expired_key_still_decrypts_the_metadata_written_with_it() {
+    let fake = FakePassbolt::new();
+    let mut keys = data::metadata_keys(&[("mk1", &METADATA)]);
+    keys[0]["expired"] = "2025-07-01T00:00:00+00:00".into();
+    fake.on("GET", METADATA_KEYS_PATH, keys);
+    let client = login_ada(&fake).await;
+    let resource = data::resource_v5(&data::metadata("GitHub"), &METADATA, "shared_key", "mk1");
+
+    let metadata = client
+        .decrypt_resource_metadata(&resource)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(metadata.name.as_deref(), Some("GitHub"));
+}
+
+#[tokio::test]
+async fn a_deleted_key_returned_anyway_is_ignored() {
+    let fake = FakePassbolt::new();
+    let mut keys = data::metadata_keys(&[("mk1", &METADATA)]);
+    keys[0]["deleted"] = "2025-07-01T00:00:00+00:00".into();
+    fake.on("GET", METADATA_KEYS_PATH, keys);
+    let client = login_ada(&fake).await;
+
+    assert!(client.metadata_keys().await.unwrap().is_empty());
+}

@@ -64,6 +64,27 @@ fn is_mfa_challenge(response: &HttpResponse) -> bool {
         })
 }
 
+/// The secret as its type has it: the password itself for `password-string` types, JSON
+/// otherwise; guessed from the JSON when the type is unknown.
+fn parse_typed_secret(
+    text: String,
+    secret_is_string: Option<bool>,
+) -> Result<SecretData, PassboltError> {
+    match secret_is_string {
+        Some(true) => Ok(SecretData {
+            password: Some(text.clone()),
+            raw: Some(text),
+            ..Default::default()
+        }),
+        Some(false) => serde_json::from_str(&text).map_err(|error| {
+            PassboltError::Other(format!(
+                "The secret is not the JSON its type expects: {error}"
+            ))
+        }),
+        None => parse_secret(text.into_bytes()),
+    }
+}
+
 /// A JSON object secret, or the plain password of a `password-string` type.
 fn parse_secret(plaintext: Vec<u8>) -> Result<SecretData, PassboltError> {
     let text = String::from_utf8(plaintext)
@@ -594,26 +615,26 @@ impl<H: HttpClient> PassboltSdk<H> {
         resources: &[Resource],
         workers: usize,
     ) -> Result<HashMap<String, SecretData>, PassboltError> {
-        let texts = self.decrypt_secret_texts_batch(resources, workers).await?;
-        resources
-            .iter()
-            .map(|resource| {
-                let secret = match texts.get(&resource.id) {
-                    Some(text) => parse_secret(text.clone().into_bytes())?,
-                    None => SecretData::default(),
-                };
-                Ok((resource.id.clone(), secret))
-            })
-            .collect()
+        let mut texts = self.decrypt_secret_texts_batch(resources, workers).await?;
+        let mut secrets = HashMap::with_capacity(resources.len());
+        for resource in resources {
+            let secret = match texts.remove(&resource.id) {
+                Some(text) => parse_typed_secret(text?, self.secret_is_string(resource).await?)?,
+                None => SecretData::default(),
+            };
+            secrets.insert(resource.id.clone(), secret);
+        }
+        Ok(secrets)
     }
 
-    /// The decrypted secrets of `resources` by resource id, as written; resources without a
-    /// secret for the user are left out. Decrypted in parallel on `workers` threads (0: one per CPU).
+    /// The decrypted secrets of `resources` by resource id, as written, or why one could not be
+    /// decrypted; resources without a secret for the user are left out. Decrypted in parallel
+    /// on `workers` threads (0: one per CPU).
     pub async fn decrypt_secret_texts_batch(
         &self,
         resources: &[Resource],
         workers: usize,
-    ) -> Result<HashMap<String, String>, PassboltError> {
+    ) -> Result<HashMap<String, Result<String, PassboltError>>, PassboltError> {
         let encrypted_secrets: Vec<(String, String)> = resources
             .iter()
             .filter_map(|resource| {
@@ -624,16 +645,18 @@ impl<H: HttpClient> PassboltSdk<H> {
         let key = Arc::new(self.private_key.key.clone());
         let passphrase = Arc::new(self.passphrase.clone());
         let decrypt = move |id: String, encrypted: String| {
-            let plaintext = crypto::decrypt_message(&encrypted, &key, passphrase.expose_secret())
+            let text = crypto::decrypt_message(&encrypted, &key, passphrase.expose_secret())
                 .map_err(|error| {
-                CryptoError::Decrypt(format!("resource {id} secret: {error}"))
-            })?;
-            let text = String::from_utf8(plaintext).map_err(|error| {
-                PassboltError::Other(format!(
-                    "Secret of resource {id} is not valid UTF-8: {error}"
-                ))
-            })?;
-            Ok::<_, PassboltError>((id, text))
+                    CryptoError::Decrypt(format!("resource {id} secret: {error}")).into()
+                })
+                .and_then(|plaintext| {
+                    String::from_utf8(plaintext).map_err(|error| {
+                        PassboltError::Other(format!(
+                            "Secret of resource {id} is not valid UTF-8: {error}"
+                        ))
+                    })
+                });
+            (id, text)
         };
 
         #[cfg(feature = "native")]
@@ -663,7 +686,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             while let Some(result) = tasks.join_next().await {
                 let (id, text) = result.map_err(|error| {
                     PassboltError::Other(format!("Decryption task failed: {error}"))
-                })??;
+                })?;
                 texts.insert(id, text);
             }
             Ok(texts)
@@ -671,10 +694,10 @@ impl<H: HttpClient> PassboltSdk<H> {
         #[cfg(not(feature = "native"))]
         {
             let _ = workers;
-            encrypted_secrets
+            Ok(encrypted_secrets
                 .into_iter()
                 .map(|(id, encrypted)| decrypt(id, encrypted))
-                .collect()
+                .collect())
         }
     }
 
@@ -789,12 +812,11 @@ impl<H: HttpClient> PassboltSdk<H> {
         &self,
         resource: &Resource,
     ) -> Result<SecretData, PassboltError> {
-        self.decrypt_resource_secret_text(resource)
-            .await?
-            .map_or_else(
-                || Ok(SecretData::default()),
-                |text| parse_secret(text.into_bytes()),
-            )
+        let Some(text) = self.decrypt_resource_secret_text(resource).await? else {
+            return Ok(SecretData::default());
+        };
+        let secret_is_string = self.secret_is_string(resource).await?;
+        parse_typed_secret(text, secret_is_string)
     }
 
     /// The decrypted secret as written: the password of `password-string` types, JSON otherwise.
@@ -832,6 +854,20 @@ impl<H: HttpClient> PassboltSdk<H> {
         String::from_utf8(plaintext)
             .map(Some)
             .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))
+    }
+
+    /// Whether the secret of `resource` is the password itself, by its type
+    /// (`password-string`); `None` type, or one the server does not list: guessed from the JSON.
+    async fn secret_is_string(&self, resource: &Resource) -> Result<Option<bool>, PassboltError> {
+        let Some(type_id) = resource.resource_type_id.as_deref() else {
+            return Ok(None);
+        };
+        Ok(self
+            .resource_types()
+            .await?
+            .iter()
+            .find(|resource_type| resource_type.id == type_id)
+            .map(ResourceType::secret_is_string))
     }
 
     /// The user's key, to sign what the user encrypts.

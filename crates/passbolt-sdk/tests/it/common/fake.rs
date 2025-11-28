@@ -118,6 +118,7 @@ impl FakePassbolt {
         };
         fake.on("GET", "/users/me.json", data::user("ada"));
         fake.on("GET", "/auth/verify.json", data::auth_verify(&SERVER));
+        fake.on("GET", "/resource-types.json", data::resource_types());
         fake.on("POST", "/auth/logout.json", Value::Null);
         fake
     }

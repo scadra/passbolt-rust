@@ -268,3 +268,171 @@ async fn creates_v4_without_the_metadata_plugin() {
     );
     assert_eq!(body["name"], "GitHub");
 }
+
+fn shared_keys_server(keys: Value) -> FakePassbolt {
+    let fake = v5_server(
+        json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false}),
+    );
+    fake.on("GET", "/metadata/keys.json", keys);
+    fake
+}
+
+/// `mk-old` created before `mk-new`, both shared with ada.
+fn two_metadata_keys() -> Value {
+    let mut keys = data::metadata_keys(&[("mk-old", &METADATA), ("mk-new", &METADATA)]);
+    keys[0]["created"] = "2025-01-01T00:00:00+00:00".into();
+    keys[1]["created"] = "2025-06-01T00:00:00+00:00".into();
+    keys
+}
+
+#[tokio::test]
+async fn metadata_holds_only_the_fields_of_its_type() {
+    let fake = v5_server(data::metadata_keys_settings());
+    let pin = NewResource {
+        pin_code: Some("1234".into()),
+        ..NewResource {
+            name: "Door".into(),
+            ..NewResource::default()
+        }
+    };
+
+    let body = create(&fake, &pin).await.unwrap();
+
+    let metadata = ADA.decrypt_json(body["metadata"].as_str().unwrap());
+    let mut fields: Vec<&str> = metadata
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["name", "object_type", "resource_type_id"]);
+}
+
+#[tokio::test]
+async fn new_shared_metadata_uses_the_latest_created_key() {
+    let fake = shared_keys_server(two_metadata_keys());
+
+    let body = create(&fake, &github()).await.unwrap();
+
+    assert_eq!(body["metadata_key_id"], "mk-new");
+}
+
+#[tokio::test]
+async fn an_expired_key_is_not_used_for_new_metadata() {
+    let mut keys = two_metadata_keys();
+    keys[1]["expired"] = "2025-07-01T00:00:00+00:00".into();
+    let fake = shared_keys_server(keys);
+
+    let body = create(&fake, &github()).await.unwrap();
+
+    assert_eq!(body["metadata_key_id"], "mk-old");
+}
+
+#[tokio::test]
+async fn shared_metadata_needs_an_active_key() {
+    let mut keys = two_metadata_keys();
+    for key in keys.as_array_mut().unwrap() {
+        key["expired"] = "2025-07-01T00:00:00+00:00".into();
+    }
+    let fake = shared_keys_server(keys);
+
+    let error = create(&fake, &github()).await.unwrap_err();
+
+    assert!(
+        error.to_string().contains("no active shared metadata key"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_share_of_the_key_metadata_is_signed_by_the_user_only() {
+    let mut keys = data::metadata_keys(&[("mk1", &METADATA)]);
+    keys[0]["metadata_private_keys"] = json!([]);
+    let fake = shared_keys_server(keys);
+
+    let body = create(&fake, &github()).await.unwrap();
+
+    let metadata = METADATA.decrypt_signed(body["metadata"].as_str().unwrap(), &[&ADA]);
+    assert!(metadata.contains(r#""name":"GitHub""#), "{metadata}");
+}
+
+#[tokio::test]
+async fn settings_and_resource_types_are_fetched_once() {
+    let fake = v5_server(data::metadata_keys_settings());
+    let client = login_ada(&fake).await;
+
+    for _ in 0..2 {
+        create::create_resource(&client, &github()).await.unwrap();
+    }
+
+    for path in [
+        "/metadata/types/settings.json",
+        "/metadata/keys/settings.json",
+        "/resource-types.json",
+    ] {
+        assert_eq!(fake.requests_to("GET", path).len(), 1, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_settings_error_other_than_missing_plugin_is_reported() {
+    let fake = v5_server(data::metadata_keys_settings());
+    fake.on_error_saying(
+        "GET",
+        "/metadata/types/settings.json",
+        500,
+        "Internal error.",
+    );
+    let client = login_ada(&fake).await;
+
+    let error = create::create_resource(&client, &github())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            PassboltError::Api(passbolt_sdk::ApiError { status: 500, .. })
+        ),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn free_fields_are_written_last_and_checked() {
+    let fake = v5_server(data::metadata_keys_settings());
+    let mut new_resource = github();
+    new_resource
+        .metadata_fields
+        .insert("username".into(), "from-field".into());
+
+    let body = create(&fake, &new_resource).await.unwrap();
+
+    assert_eq!(
+        ADA.decrypt_json(body["metadata"].as_str().unwrap())["username"],
+        "from-field"
+    );
+}
+
+#[rstest]
+#[case::secret_field_on_a_password_string(
+    NewResource { resource_type: Some("password-string".into()), description: None, secret_fields: serde_json::Map::from_iter([("totp".to_string(), json!({}))]), ..github() },
+    "totp is not allowed"
+)]
+#[case::undeclared_metadata_field(
+    NewResource { metadata_fields: serde_json::Map::from_iter([("colour".to_string(), json!("red"))]), ..github() },
+    "colour is not allowed"
+)]
+#[case::note_on_v4(NewResource { resource_type: Some("password-and-description".into()), description: None, note: Some("n".into()), ..github() }, "secret description of v5")]
+#[tokio::test]
+async fn free_fields_and_notes_follow_the_type(
+    #[case] new_resource: NewResource,
+    #[case] expected: &str,
+) {
+    let fake = v5_server(data::metadata_keys_settings());
+
+    let error = refused(&fake, &new_resource).await;
+
+    assert!(error.contains(expected), "{error}");
+}
