@@ -20,7 +20,7 @@ use crate::cli::root::Cli;
 #[derive(Args, Debug)]
 pub struct GendocArgs {
     /// Output format: markdown | man
-    #[arg(short = 't', long, default_value = "markdown")]
+    #[arg(short = 't', long, default_value = "markdown", value_parser = ["markdown", "man"])]
     pub doc_type: String,
 
     /// Directory to write output files into (created if absent)
@@ -32,11 +32,7 @@ pub fn run_gendoc(args: &GendocArgs) -> Result<()> {
     std::fs::create_dir_all(&args.output_dir)?;
     match args.doc_type.as_str() {
         "man" => generate_man_pages(&args.output_dir),
-        "markdown" => generate_markdown(&args.output_dir),
-        other => {
-            eprintln!("Unknown doc type '{other}', use 'markdown' or 'man'");
-            generate_markdown(&args.output_dir)
-        }
+        _ => generate_markdown(&args.output_dir),
     }
 }
 

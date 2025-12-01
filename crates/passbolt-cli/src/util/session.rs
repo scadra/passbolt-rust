@@ -34,7 +34,10 @@ pub async fn get_client(config: &Config) -> Result<Client> {
                     config.mfa_retry_delay()?,
                 )))
             }
-            _ => Some(Box::new(crate::util::mfa::TerminalMfaProvider)),
+            "interactive-totp" => Some(Box::new(crate::util::mfa::TerminalMfaProvider)),
+            other => anyhow::bail!(
+                "Unknown MFA mode {other}: use none, interactive-totp or noninteractive-totp"
+            ),
         };
 
     let max_attempts = sdk_config.mfa_retrys.max(1);
