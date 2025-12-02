@@ -419,3 +419,35 @@ fn an_environment_variable_takes_precedence_over_the_config_file() {
         "{saved}"
     );
 }
+
+#[test]
+fn gendoc_refuses_an_unknown_format() {
+    let directory = tempfile::tempdir().unwrap();
+
+    passbolt()
+        .args([
+            "gendoc",
+            "-t",
+            "pdf",
+            "--output-dir",
+            directory.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("pdf"));
+}
+
+#[test]
+fn an_unknown_mfa_mode_is_refused_before_contacting_the_server() {
+    let directory = tempfile::tempdir().unwrap();
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", directory.path().join("config.toml"))
+        .env("PASSBOLT_SERVER_ADDRESS", "http://127.0.0.1:1")
+        .env("PASSBOLT_USER_PASSWORD", "dummy")
+        .env("PASSBOLT_USER_PRIVATE_KEY", "not-a-key")
+        .args(["--mfa-mode", "interactive", "list", "resource"])
+        .assert()
+        .failure()
+        .stderr(contains("Unknown MFA mode interactive"));
+}
