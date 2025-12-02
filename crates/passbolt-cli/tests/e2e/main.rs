@@ -18,6 +18,7 @@ mod common;
 mod directory;
 mod errors;
 mod folders;
+mod outputs;
 mod resource_types;
 mod resources;
 mod session;

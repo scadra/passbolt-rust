@@ -53,94 +53,17 @@ pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Convert a display column name to a JSON field name (`snake_case`).
-///
-/// Handles the common Passbolt column name conventions used in table output.
-fn column_to_field(column: &str) -> String {
-    // Map known display names → JSON field names
-    match column.to_lowercase().as_str() {
-        "id" => "id".into(),
-        "name" => "name".into(),
-        "username" => "username".into(),
-        "uri" | "url" => "uri".into(),
-        "description" => "description".into(),
-        "folderparentid" | "folder_parent_id" | "parent id" | "parent" => "folder_parent_id".into(),
-        "created" => "created".into(),
-        "modified" => "modified".into(),
-        "created_by" | "createdby" => "created_by".into(),
-        "modified_by" | "modifiedby" => "modified_by".into(),
-        "personal" => "personal".into(),
-        "expired" | "expiry" => "expired".into(),
-        "resource_type_id" | "resourcetypeid" | "type" => "resource_type_id".into(),
-        "members" => "groups_users".into(),
-        "role" => "role".into(),
-        "active" => "active".into(),
-        "deleted" => "deleted".into(),
-        // Fallback: convert CamelCase/PascalCase to snake_case
-        other => camel_to_snake(other),
+/// Report a write: `Deleted resource <id>`, or `{"id": …, "result": "deleted"}` with `--json`.
+pub fn print_done(json: bool, result: &str, entity: &str, id: &str) -> anyhow::Result<()> {
+    if json {
+        return print_json(&serde_json::json!({ "id": id, "result": result }));
     }
-}
-
-fn camel_to_snake(text: &str) -> String {
-    let mut snake = String::with_capacity(text.len() + 4);
-    for (i, character) in text.char_indices() {
-        if character.is_uppercase() && i > 0 {
-            snake.push('_');
-        }
-        for lowercase in character.to_lowercase() {
-            snake.push(lowercase);
-        }
+    let mut verb = result.to_string();
+    if let Some(first) = verb.get_mut(..1) {
+        first.make_ascii_uppercase();
     }
-    snake
-}
-
-/// Print a list of serializable values as pretty JSON, filtered to the given columns.
-///
-/// If `columns` is empty the full objects are printed (no filtering).
-pub fn print_json_with_columns<T: Serialize>(
-    values: &[T],
-    columns: &[String],
-) -> anyhow::Result<()> {
-    let json = serde_json::to_string_pretty(&select_columns(values, columns)?)?;
-    println!("{json}");
+    println!("{verb} {entity} {id}");
     Ok(())
-}
-
-/// Serialize `values`, keeping only the fields named by `columns` (all of them if empty).
-fn select_columns<T: Serialize>(
-    values: &[T],
-    columns: &[String],
-) -> anyhow::Result<serde_json::Value> {
-    let serialized = serde_json::to_value(values)?;
-    if columns.is_empty() {
-        return Ok(serialized);
-    }
-
-    let fields: Vec<String> = columns
-        .iter()
-        .map(|column| column_to_field(column))
-        .collect();
-
-    let serde_json::Value::Array(items) = serialized else {
-        return Ok(serialized);
-    };
-    let filtered = items
-        .into_iter()
-        .map(|item| {
-            let serde_json::Value::Object(map) = item else {
-                return serde_json::Value::Object(serde_json::Map::new());
-            };
-            let filtered_map: serde_json::Map<String, serde_json::Value> = fields
-                .iter()
-                .filter_map(|field| {
-                    map.get(field)
-                        .map(|field_value| (field.clone(), field_value.clone()))
-                })
-                .collect();
-            serde_json::Value::Object(filtered_map)
-        })
-        .collect();
-    Ok(serde_json::Value::Array(filtered))
 }
 
 /// Print key-value pairs, stripped of control characters like table cells.
@@ -161,7 +84,6 @@ fn format_kv(key: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Serialize;
 
     // ─── strip_control_chars ──────────────────────────────────────────────────
 
@@ -180,87 +102,6 @@ mod tests {
     #[test]
     fn test_strip_control_chars_passthrough_normal() {
         assert_eq!(strip_control_chars("hello world"), "hello world");
-    }
-
-    // ─── camel_to_snake ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_camel_to_snake_converts() {
-        assert_eq!(camel_to_snake("FolderParentId"), "folder_parent_id");
-        assert_eq!(camel_to_snake("createdBy"), "created_by");
-        assert_eq!(camel_to_snake("id"), "id");
-    }
-
-    // ─── column_to_field ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_column_to_field_known_names() {
-        assert_eq!(column_to_field("id"), "id");
-        assert_eq!(column_to_field("URI"), "uri");
-        assert_eq!(column_to_field("FolderParentID"), "folder_parent_id");
-        assert_eq!(column_to_field("Members"), "groups_users");
-    }
-
-    // ─── print_json_with_columns ─────────────────────────────────────────────
-
-    #[derive(Serialize)]
-    struct Item {
-        id: String,
-        name: String,
-        secret: String,
-    }
-
-    fn make_items() -> Vec<Item> {
-        vec![Item {
-            id: "abc".into(),
-            name: "Test".into(),
-            secret: "s3cr3t".into(),
-        }]
-    }
-
-    #[test]
-    fn test_select_columns_without_columns_keeps_every_field() {
-        let selected = select_columns(&make_items(), &[]).unwrap();
-
-        assert_eq!(
-            selected,
-            serde_json::json!([{"id": "abc", "name": "Test", "secret": "s3cr3t"}])
-        );
-    }
-
-    #[test]
-    fn test_select_columns_keeps_only_the_given_columns() {
-        let columns = vec!["id".to_string(), "Name".to_string()];
-
-        let selected = select_columns(&make_items(), &columns).unwrap();
-
-        assert_eq!(selected, serde_json::json!([{"id": "abc", "name": "Test"}]));
-    }
-
-    #[test]
-    fn test_select_columns_skips_an_unknown_column() {
-        let columns = vec!["id".to_string(), "nonexistent_column".to_string()];
-
-        let selected = select_columns(&make_items(), &columns).unwrap();
-
-        assert_eq!(selected, serde_json::json!([{"id": "abc"}]));
-    }
-
-    #[test]
-    fn test_select_columns_maps_members_to_groups_users() {
-        let groups = vec![serde_json::json!({
-            "id": "group",
-            "groups_users": [{"user_id": "ada"}],
-            "secret": "s3cr3t"
-        })];
-        let columns = vec!["Members".to_string()];
-
-        let selected = select_columns(&groups, &columns).unwrap();
-
-        assert_eq!(
-            selected,
-            serde_json::json!([{"groups_users": [{"user_id": "ada"}]}])
-        );
     }
 
     // ─── print_kv ────────────────────────────────────────────────────────────

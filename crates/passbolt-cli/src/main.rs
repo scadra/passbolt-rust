@@ -525,45 +525,13 @@ async fn dispatch(
                 )
                 .await?;
 
-                if json_output {
-                    output::print_json_with_columns(&folders, column)?;
-                } else {
-                    let default_columns = ["ID", "Name", "Parent ID"];
-                    let effective_columns: Vec<String> = if column.is_empty() {
-                        default_columns
-                            .iter()
-                            .map(|column| (*column).to_string())
-                            .collect()
-                    } else {
-                        column.clone()
-                    };
-                    let rows: Vec<Vec<String>> = folders
-                        .iter()
-                        .map(|folder| {
-                            effective_columns
-                                .iter()
-                                .map(|column| match column.to_lowercase().as_str() {
-                                    "id" => folder.id.clone(),
-                                    "name" => folder.name.clone(),
-                                    "parent id" | "folderparentid" | "folder_parent_id" => {
-                                        folder.folder_parent_id.clone().unwrap_or_default()
-                                    }
-                                    "created" => folder
-                                        .created
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    "modified" => folder
-                                        .modified
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    _ => String::new(),
-                                })
-                                .collect()
-                        })
-                        .collect();
-                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
-                    output::print_table(&headers, rows);
-                }
+                util::columns::print(
+                    &folders,
+                    &util::columns::FOLDER_COLUMNS,
+                    column,
+                    &util::columns::FOLDER_DEFAULTS,
+                    json_output,
+                )?;
             }
 
             ListEntity::User {
@@ -586,49 +554,13 @@ async fn dispatch(
                 )
                 .await?;
 
-                if json_output {
-                    output::print_json_with_columns(&users, column)?;
-                } else {
-                    let default_columns = ["ID", "Username", "First Name", "Last Name", "Role"];
-                    let effective_columns: Vec<String> = if column.is_empty() {
-                        default_columns
-                            .iter()
-                            .map(|column| (*column).to_string())
-                            .collect()
-                    } else {
-                        column.clone()
-                    };
-                    let rows: Vec<Vec<String>> = users
-                        .iter()
-                        .map(|user| {
-                            effective_columns
-                                .iter()
-                                .map(|column| match column.to_lowercase().as_str() {
-                                    "id" => user.id.clone(),
-                                    "username" => user.username.clone().unwrap_or_default(),
-                                    "first name" | "firstname" | "first_name" => {
-                                        user.first_name().to_string()
-                                    }
-                                    "last name" | "lastname" | "last_name" => {
-                                        user.last_name().to_string()
-                                    }
-                                    "role" => user.role_name().to_string(),
-                                    "created" => user
-                                        .created
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    "modified" => user
-                                        .modified
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    _ => String::new(),
-                                })
-                                .collect()
-                        })
-                        .collect();
-                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
-                    output::print_table(&headers, rows);
-                }
+                util::columns::print(
+                    &users,
+                    &util::columns::USER_COLUMNS,
+                    column,
+                    &util::columns::USER_DEFAULTS,
+                    json_output,
+                )?;
             }
 
             ListEntity::Group {
@@ -647,43 +579,13 @@ async fn dispatch(
                 )
                 .await?;
 
-                if json_output {
-                    output::print_json_with_columns(&groups, column)?;
-                } else {
-                    let default_columns = ["ID", "Name", "Members"];
-                    let effective_columns: Vec<String> = if column.is_empty() {
-                        default_columns
-                            .iter()
-                            .map(|column| (*column).to_string())
-                            .collect()
-                    } else {
-                        column.clone()
-                    };
-                    let rows: Vec<Vec<String>> = groups
-                        .iter()
-                        .map(|group| {
-                            effective_columns
-                                .iter()
-                                .map(|column| match column.to_lowercase().as_str() {
-                                    "id" => group.id.clone(),
-                                    "name" => group.name.clone(),
-                                    "members" => group.groups_users.len().to_string(),
-                                    "created" => group
-                                        .created
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    "modified" => group
-                                        .modified
-                                        .map(|date| date.to_rfc3339())
-                                        .unwrap_or_default(),
-                                    _ => String::new(),
-                                })
-                                .collect()
-                        })
-                        .collect();
-                    let headers: Vec<&str> = effective_columns.iter().map(String::as_str).collect();
-                    output::print_table(&headers, rows);
-                }
+                util::columns::print(
+                    &groups,
+                    &util::columns::GROUP_COLUMNS,
+                    column,
+                    &util::columns::GROUP_DEFAULTS,
+                    json_output,
+                )?;
             }
         },
 
@@ -803,19 +705,19 @@ async fn dispatch(
         Commands::Delete(args) => match &args.entity {
             DeleteEntity::Resource { id } => {
                 client.delete_resource(id).await?;
-                println!("Deleted resource {id}");
+                output::print_done(json_output, "deleted", "resource", id)?;
             }
             DeleteEntity::Folder { id } => {
                 client.delete_folder(id).await?;
-                println!("Deleted folder {id}");
+                output::print_done(json_output, "deleted", "folder", id)?;
             }
             DeleteEntity::User { id } => {
                 client.delete_user(id).await?;
-                println!("Deleted user {id}");
+                output::print_done(json_output, "deleted", "user", id)?;
             }
             DeleteEntity::Group { id } => {
                 client.delete_group(id).await?;
-                println!("Deleted group {id}");
+                output::print_done(json_output, "deleted", "group", id)?;
             }
         },
 
@@ -829,7 +731,7 @@ async fn dispatch(
             } => {
                 passbolt_sdk::resource::share::share_resource(client, id, user, group, *r#type)
                     .await?;
-                println!("Shared resource {id}");
+                output::print_done(json_output, "shared", "resource", id)?;
             }
             ShareEntity::Folder {
                 id,
@@ -847,7 +749,7 @@ async fn dispatch(
                     *with_content,
                 )
                 .await?;
-                println!("Shared folder {id}");
+                output::print_done(json_output, "shared", "folder", id)?;
             }
         },
 
@@ -858,20 +760,24 @@ async fn dispatch(
                 folder_parent_id,
                 with_folder_permissions,
             } => {
-                client
-                    .move_resource(id, folder_parent_id.as_deref())
-                    .await?;
+                // An empty folder id is the root, as the help says.
+                let folder_parent_id = folder_parent_id.as_deref().filter(|id| !id.is_empty());
+                if *with_folder_permissions && folder_parent_id.is_none() {
+                    anyhow::bail!("--with-folder-permissions needs a folder: the root has none");
+                }
+                client.move_resource(id, folder_parent_id).await?;
                 if let (true, Some(folder_id)) = (*with_folder_permissions, folder_parent_id) {
                     passbolt_sdk::resource::share::share_like_folder(client, id, folder_id).await?;
                 }
-                println!("Moved resource {id}");
+                output::print_done(json_output, "moved", "resource", id)?;
             }
             MoveEntity::Folder {
                 id,
                 folder_parent_id,
             } => {
-                client.move_folder(id, folder_parent_id.as_deref()).await?;
-                println!("Moved folder {id}");
+                let folder_parent_id = folder_parent_id.as_deref().filter(|id| !id.is_empty());
+                client.move_folder(id, folder_parent_id).await?;
+                output::print_done(json_output, "moved", "folder", id)?;
             }
         },
 
