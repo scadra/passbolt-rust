@@ -41,6 +41,16 @@ fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsError> {
     serde_wasm_bindgen::to_value(val).map_err(|error| JsError::new(&error.to_string()))
 }
 
+/// `options[name]`, if `options` is an object holding it.
+fn option(options: &JsValue, name: &str) -> Option<JsValue> {
+    if !options.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(options, &JsValue::from_str(name))
+        .ok()
+        .filter(|value| !value.is_undefined() && !value.is_null())
+}
+
 /// Decrypted secret as exposed to JS.
 ///
 /// `SecretData.raw` is not serialized by the SDK, so the password of a
@@ -91,7 +101,9 @@ fn build_sdk_config(
 ///
 /// Usage from JS:
 /// ```js
-/// const session = await PassboltSession.login(serverUrl, privateKey, passphrase);
+/// const session = await PassboltSession.login(serverUrl, privateKey, passphrase, {
+///   csrfTokenProvider: async () => (await browser.cookies.get({ name: "csrfToken", url: serverUrl }))?.value,
+/// });
 /// const resources = await session.listResources();
 /// await session.logout();
 /// ```
@@ -103,12 +115,21 @@ pub struct PassboltSession {
 #[wasm_bindgen]
 impl PassboltSession {
     /// Authenticate against a Passbolt server and return a session.
+    ///
+    /// `options` (optional):
+    /// - `csrfTokenProvider`: function returning the `csrfToken` cookie, or a promise of it,
+    ///   e.g. with `browser.cookies.get` in an extension. Default: `document.cookie`, readable
+    ///   by pages served by Passbolt only.
     #[wasm_bindgen]
     pub async fn login(
         server_url: String,
         private_key_armored: String,
         passphrase: String,
+        options: JsValue,
     ) -> Result<Self, JsError> {
+        crate::http::set_csrf_token_provider(
+            option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok()),
+        );
         let http = WasmHttpClient::new();
         let config = build_sdk_config(server_url, private_key_armored, passphrase);
 
