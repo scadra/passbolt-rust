@@ -37,8 +37,19 @@ fn to_js_error(e: PassboltError) -> JsError {
     JsError::new(&e.to_string())
 }
 
+/// Plain JS objects, not `Map`s: what JSON gives, so `metadata` and `secret` read as objects.
 fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsError> {
-    serde_wasm_bindgen::to_value(val).map_err(|error| JsError::new(&error.to_string()))
+    val.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The MFA code given at login: verified once, when the server asks.
+struct GivenTotpCode(String);
+
+impl passbolt_sdk::MfaProvider for GivenTotpCode {
+    fn get_totp_code(&self) -> Result<String, PassboltError> {
+        Ok(self.0.clone())
+    }
 }
 
 /// `options[name]`, if `options` is an object holding it.
@@ -103,6 +114,7 @@ fn build_sdk_config(
 /// ```js
 /// const session = await PassboltSession.login(serverUrl, privateKey, passphrase, {
 ///   csrfTokenProvider: async () => (await browser.cookies.get({ name: "csrfToken", url: serverUrl }))?.value,
+///   totpCode: "123456",
 /// });
 /// const resources = await session.listResources();
 /// await session.logout();
@@ -120,6 +132,7 @@ impl PassboltSession {
     /// - `csrfTokenProvider`: function returning the `csrfToken` cookie, or a promise of it,
     ///   e.g. with `browser.cookies.get` in an extension. Default: `document.cookie`, readable
     ///   by pages served by Passbolt only.
+    /// - `totpCode`: the TOTP code to answer the MFA challenge with.
     #[wasm_bindgen]
     pub async fn login(
         server_url: String,
@@ -130,10 +143,13 @@ impl PassboltSession {
         crate::http::set_csrf_token_provider(
             option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok()),
         );
+        let mfa_provider = option(&options, "totpCode")
+            .and_then(|code| code.as_string())
+            .map(|code| Box::new(GivenTotpCode(code)) as Box<dyn passbolt_sdk::MfaProvider>);
         let http = WasmHttpClient::new();
         let config = build_sdk_config(server_url, private_key_armored, passphrase);
 
-        let client = Client::login(http, &config, None, 3)
+        let client = Client::login(http, &config, mfa_provider, 1)
             .await
             .map_err(to_js_error)?;
 
