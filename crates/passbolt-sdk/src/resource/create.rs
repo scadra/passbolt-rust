@@ -22,7 +22,10 @@ use crate::types::{
 };
 
 /// A resource to create. Fields the resource type does not have are refused.
-#[derive(Debug, Clone, Default)]
+///
+/// Bindings read it from JSON with these field names; absent fields are empty.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct NewResource {
     /// Resource type slug. By default: from the fields set and the server's default version.
     pub resource_type: Option<String>,
