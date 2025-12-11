@@ -206,6 +206,130 @@ impl PassboltSession {
         to_js_value(&JsSecretData::from(secret))
     }
 
+    /// A resource with its v5 metadata and its secret decrypted, for every resource type:
+    /// `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
+    #[wasm_bindgen(js_name = "getResourceView")]
+    pub async fn get_resource_view(&self, id: String) -> Result<JsValue, JsError> {
+        let view = passbolt_sdk::resource::get::get_resource_view(&self.client, &id)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        to_js_value(&view)
+    }
+
+    /// Resources with their v5 metadata decrypted, searched by their decrypted name; their
+    /// secrets too with `withSecrets`. A resource that cannot be decrypted has an `error`.
+    #[wasm_bindgen(js_name = "listResourceViews")]
+    pub async fn list_resource_views(
+        &self,
+        search: Option<String>,
+        with_secrets: bool,
+    ) -> Result<JsValue, JsError> {
+        let query = passbolt_sdk::ResourceQuery {
+            search,
+            ..Default::default()
+        };
+        let views = passbolt_sdk::resource::list::list_resources(
+            &self.client,
+            query,
+            &[],
+            with_secrets.then_some(1),
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&views)
+    }
+
+    /// Create a resource of any type from `{name, resource_type?, username?, uris?, password?,
+    /// totp?, note?, pin_code?, custom_fields?, metadata_fields?, secret_fields?, …}`.
+    /// The type follows the fields and the server's default version when not given.
+    #[wasm_bindgen(js_name = "createResource")]
+    pub async fn create_resource(&self, new_resource: JsValue) -> Result<JsValue, JsError> {
+        let new_resource: passbolt_sdk::resource::create::NewResource =
+            serde_wasm_bindgen::from_value(new_resource)
+                .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
+        let resource = passbolt_sdk::resource::create::create_resource(&self.client, &new_resource)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&resource)
+    }
+
+    /// Update a resource from the fields to change: `{name?, password?, totp?, remove_totp?,
+    /// expired?, …}`; `expired: null` clears the expiry.
+    #[wasm_bindgen(js_name = "updateResource")]
+    pub async fn update_resource(&self, id: String, changes: JsValue) -> Result<JsValue, JsError> {
+        let changes: passbolt_sdk::resource::update::ResourceChanges =
+            serde_wasm_bindgen::from_value(changes)
+                .map_err(|error| JsError::new(&format!("Invalid changes: {error}")))?;
+        let resource = passbolt_sdk::resource::update::update_resource(&self.client, &id, &changes)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&resource)
+    }
+
+    /// Share a resource with users and groups (`permissionType` 1, 7 or 15), or revoke with -1.
+    #[wasm_bindgen(js_name = "shareResource")]
+    pub async fn share_resource(
+        &self,
+        id: String,
+        user_ids: Vec<String>,
+        group_ids: Vec<String>,
+        permission_type: i32,
+    ) -> Result<(), JsError> {
+        passbolt_sdk::resource::share::share_resource(
+            &self.client,
+            &id,
+            &user_ids,
+            &group_ids,
+            permission_type,
+        )
+        .await
+        .map_err(to_js_error)
+    }
+
+    /// Share a folder, and with `withContent` the sub-folders and resources the user owns.
+    #[wasm_bindgen(js_name = "shareFolder")]
+    pub async fn share_folder(
+        &self,
+        id: String,
+        user_ids: Vec<String>,
+        group_ids: Vec<String>,
+        permission_type: i32,
+        with_content: bool,
+    ) -> Result<(), JsError> {
+        passbolt_sdk::folder::share::share_folder(
+            &self.client,
+            &id,
+            &user_ids,
+            &group_ids,
+            permission_type,
+            with_content,
+        )
+        .await
+        .map_err(to_js_error)
+    }
+
+    /// Move a resource into a folder, or to the root without one.
+    #[wasm_bindgen(js_name = "moveResource")]
+    pub async fn move_resource(
+        &self,
+        id: String,
+        folder_id: Option<String>,
+    ) -> Result<(), JsError> {
+        self.client
+            .move_resource(&id, folder_id.as_deref())
+            .await
+            .map_err(to_js_error)
+    }
+
+    /// Move a folder into another one, or to the root without one.
+    #[wasm_bindgen(js_name = "moveFolder")]
+    pub async fn move_folder(&self, id: String, folder_id: Option<String>) -> Result<(), JsError> {
+        self.client
+            .move_folder(&id, folder_id.as_deref())
+            .await
+            .map_err(to_js_error)
+    }
+
     /// Delete a resource.
     #[wasm_bindgen(js_name = "deleteResource")]
     pub async fn delete_resource(&self, id: String) -> Result<(), JsError> {
