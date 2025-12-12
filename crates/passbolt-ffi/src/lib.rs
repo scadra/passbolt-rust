@@ -32,6 +32,8 @@ mod error;
 mod mfa;
 mod types;
 
+pub use error::PassboltFfiError;
+
 uniffi::setup_scaffolding!();
 
 use std::sync::{Arc, LazyLock};
@@ -40,7 +42,6 @@ use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::platform::native::{NativeHttpClient, NativeHttpConfig};
 use passbolt_sdk::{MfaProvider, PassboltSdk};
 
-use crate::error::PassboltFfiError;
 use crate::mfa::{TotpSecretProvider, NON_INTERACTIVE_TOTP};
 use crate::types::{
     FfiAro, FfiComment, FfiFavorite, FfiFolder, FfiFolderQuery, FfiFolderTreeNode, FfiGroup,
@@ -212,6 +213,139 @@ impl PassboltClient {
             .block_on(self.inner.get_resources(query.into()))
             .map_err(PassboltFfiError::from)?;
         Ok(resources.into_iter().map(FfiResource::from).collect())
+    }
+
+    /// A resource with its v5 metadata and its secret decrypted, for every resource type, as
+    /// JSON: `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
+    pub fn get_resource_view(&self, id: String) -> Result<String, PassboltFfiError> {
+        let view = RUNTIME
+            .block_on(passbolt_sdk::resource::get::get_resource_view(
+                &self.inner,
+                &id,
+            ))
+            .map_err(|error| PassboltFfiError::Other {
+                message: format!("{error:#}"),
+            })?;
+        to_json(&view)
+    }
+
+    /// Resources with their v5 metadata decrypted, searched by their decrypted name, as a JSON
+    /// array; their secrets too with `with_secrets`. One that does not decrypt has an `error`.
+    pub fn list_resource_views(
+        &self,
+        search: Option<String>,
+        with_secrets: bool,
+    ) -> Result<String, PassboltFfiError> {
+        let query = passbolt_sdk::ResourceQuery {
+            search,
+            ..Default::default()
+        };
+        let views = RUNTIME
+            .block_on(passbolt_sdk::resource::list::list_resources(
+                &self.inner,
+                query,
+                &[],
+                with_secrets.then_some(0),
+            ))
+            .map_err(PassboltFfiError::from)?;
+        to_json(&views)
+    }
+
+    /// Create a resource of any type from JSON: `{"name": …, "resource_type"?, "username"?,
+    /// "uris"?, "password"?, "totp"?, "note"?, "pin_code"?, "custom_fields"?,
+    /// "metadata_fields"?, "secret_fields"?, …}`. Returns the created resource.
+    pub fn create_resource(
+        &self,
+        new_resource_json: String,
+    ) -> Result<FfiResource, PassboltFfiError> {
+        let new_resource = from_json(&new_resource_json)?;
+        let resource = RUNTIME
+            .block_on(passbolt_sdk::resource::create::create_resource(
+                &self.inner,
+                &new_resource,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiResource::from(resource))
+    }
+
+    /// Update a resource from the JSON of the fields to change; `"expired": null` clears the
+    /// expiry. Other fields keep their value.
+    pub fn update_resource(
+        &self,
+        id: String,
+        changes_json: String,
+    ) -> Result<FfiResource, PassboltFfiError> {
+        let changes = from_json(&changes_json)?;
+        let resource = RUNTIME
+            .block_on(passbolt_sdk::resource::update::update_resource(
+                &self.inner,
+                &id,
+                &changes,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiResource::from(resource))
+    }
+
+    /// Share a resource with users and groups (`permission_type` 1, 7 or 15), or revoke with -1.
+    pub fn share_resource(
+        &self,
+        id: String,
+        user_ids: Vec<String>,
+        group_ids: Vec<String>,
+        permission_type: i32,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(passbolt_sdk::resource::share::share_resource(
+                &self.inner,
+                &id,
+                &user_ids,
+                &group_ids,
+                permission_type,
+            ))
+            .map_err(Into::into)
+    }
+
+    /// Share a folder, and with `with_content` the sub-folders and resources the user owns.
+    pub fn share_folder(
+        &self,
+        id: String,
+        user_ids: Vec<String>,
+        group_ids: Vec<String>,
+        permission_type: i32,
+        with_content: bool,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(passbolt_sdk::folder::share::share_folder(
+                &self.inner,
+                &id,
+                &user_ids,
+                &group_ids,
+                permission_type,
+                with_content,
+            ))
+            .map_err(Into::into)
+    }
+
+    /// Move a resource into a folder, or to the root without one.
+    pub fn move_resource(
+        &self,
+        id: String,
+        folder_id: Option<String>,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.move_resource(&id, folder_id.as_deref()))
+            .map_err(Into::into)
+    }
+
+    /// Move a folder into another one, or to the root without one.
+    pub fn move_folder(
+        &self,
+        id: String,
+        folder_id: Option<String>,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.move_folder(&id, folder_id.as_deref()))
+            .map_err(Into::into)
     }
 
     /// Get a single resource by ID.
@@ -527,6 +661,18 @@ impl PassboltClient {
 // ── Stateless crypto functions ──────────────────────────────────────────────
 
 /// Decrypt a PGP-armored message with a private key.
+fn to_json<T: serde::Serialize>(value: &T) -> Result<String, PassboltFfiError> {
+    serde_json::to_string(value).map_err(|error| PassboltFfiError::Other {
+        message: format!("Cannot write JSON: {error}"),
+    })
+}
+
+fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, PassboltFfiError> {
+    serde_json::from_str(json).map_err(|error| PassboltFfiError::InvalidArgument {
+        message: format!("Invalid JSON: {error}"),
+    })
+}
+
 #[uniffi::export]
 pub fn decrypt_message(
     armored_message: String,
