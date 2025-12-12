@@ -21,7 +21,10 @@ use crate::resource::view::v4_fields;
 use crate::types::{Resource, ResourceType, SecretPayload, TotpData, UpdateResourcePayload};
 
 /// Changes to a resource; `None` keeps the current value.
-#[derive(Debug, Clone, Default)]
+///
+/// Bindings read it from JSON with these field names; `"expired": null` clears the expiry.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ResourceChanges {
     pub name: Option<String>,
     pub username: Option<String>,
@@ -38,11 +41,20 @@ pub struct ResourceChanges {
     /// Switches to the type without TOTP.
     pub remove_totp: bool,
     /// `Some(None)` clears the expiry.
+    #[serde(deserialize_with = "present")]
     pub expired: Option<Option<String>>,
     /// Fields set as given, last: the v5 metadata or v4 resource fields (`--field`).
     pub metadata_fields: Map<String, Value>,
     /// Secret fields set as given, last (`--secret-field`).
     pub secret_fields: Map<String, Value>,
+}
+
+/// A field present in the JSON, even `null`: `Some(None)` then.
+#[allow(clippy::option_option)] // absent, `null` and a date are three different changes
+fn present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 impl ResourceChanges {
@@ -387,4 +399,24 @@ async fn encrypt_for_users_with_access<H: HttpClient>(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_changes_from_json_tell_a_null_expiry_from_an_absent_one() {
+        let clearing: ResourceChanges = serde_json::from_str(r#"{"expired": null}"#).unwrap();
+        let keeping: ResourceChanges = serde_json::from_str(r#"{"name": "GitLab"}"#).unwrap();
+
+        assert_eq!(clearing.expired, Some(None));
+        assert_eq!(keeping.expired, None);
+        assert_eq!(keeping.name.as_deref(), Some("GitLab"));
+    }
+
+    #[test]
+    fn test_changes_from_json_refuse_an_unknown_field() {
+        assert!(serde_json::from_str::<ResourceChanges>(r#"{"nmae": "typo"}"#).is_err());
+    }
 }

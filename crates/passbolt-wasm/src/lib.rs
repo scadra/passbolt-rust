@@ -37,8 +37,29 @@ fn to_js_error(e: PassboltError) -> JsError {
     JsError::new(&e.to_string())
 }
 
+/// Plain JS objects, not `Map`s: what JSON gives, so `metadata` and `secret` read as objects.
 fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsError> {
-    serde_wasm_bindgen::to_value(val).map_err(|error| JsError::new(&error.to_string()))
+    val.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The MFA code given at login: verified once, when the server asks.
+struct GivenTotpCode(String);
+
+impl passbolt_sdk::MfaProvider for GivenTotpCode {
+    fn get_totp_code(&self) -> Result<String, PassboltError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// `options[name]`, if `options` is an object holding it.
+fn option(options: &JsValue, name: &str) -> Option<JsValue> {
+    if !options.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(options, &JsValue::from_str(name))
+        .ok()
+        .filter(|value| !value.is_undefined() && !value.is_null())
 }
 
 /// Decrypted secret as exposed to JS.
@@ -91,7 +112,10 @@ fn build_sdk_config(
 ///
 /// Usage from JS:
 /// ```js
-/// const session = await PassboltSession.login(serverUrl, privateKey, passphrase);
+/// const session = await PassboltSession.login(serverUrl, privateKey, passphrase, {
+///   csrfTokenProvider: async () => (await browser.cookies.get({ name: "csrfToken", url: serverUrl }))?.value,
+///   totpCode: "123456",
+/// });
 /// const resources = await session.listResources();
 /// await session.logout();
 /// ```
@@ -103,16 +127,29 @@ pub struct PassboltSession {
 #[wasm_bindgen]
 impl PassboltSession {
     /// Authenticate against a Passbolt server and return a session.
+    ///
+    /// `options` (optional):
+    /// - `csrfTokenProvider`: function returning the `csrfToken` cookie, or a promise of it,
+    ///   e.g. with `browser.cookies.get` in an extension. Default: `document.cookie`, readable
+    ///   by pages served by Passbolt only.
+    /// - `totpCode`: the TOTP code to answer the MFA challenge with.
     #[wasm_bindgen]
     pub async fn login(
         server_url: String,
         private_key_armored: String,
         passphrase: String,
+        options: JsValue,
     ) -> Result<Self, JsError> {
+        crate::http::set_csrf_token_provider(
+            option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok()),
+        );
+        let mfa_provider = option(&options, "totpCode")
+            .and_then(|code| code.as_string())
+            .map(|code| Box::new(GivenTotpCode(code)) as Box<dyn passbolt_sdk::MfaProvider>);
         let http = WasmHttpClient::new();
         let config = build_sdk_config(server_url, private_key_armored, passphrase);
 
-        let client = Client::login(http, &config, None, 3)
+        let client = Client::login(http, &config, mfa_provider, 1)
             .await
             .map_err(to_js_error)?;
 
@@ -167,6 +204,130 @@ impl PassboltSession {
             .await
             .map_err(to_js_error)?;
         to_js_value(&JsSecretData::from(secret))
+    }
+
+    /// A resource with its v5 metadata and its secret decrypted, for every resource type:
+    /// `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
+    #[wasm_bindgen(js_name = "getResourceView")]
+    pub async fn get_resource_view(&self, id: String) -> Result<JsValue, JsError> {
+        let view = passbolt_sdk::resource::get::get_resource_view(&self.client, &id)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        to_js_value(&view)
+    }
+
+    /// Resources with their v5 metadata decrypted, searched by their decrypted name; their
+    /// secrets too with `withSecrets`. A resource that cannot be decrypted has an `error`.
+    #[wasm_bindgen(js_name = "listResourceViews")]
+    pub async fn list_resource_views(
+        &self,
+        search: Option<String>,
+        with_secrets: bool,
+    ) -> Result<JsValue, JsError> {
+        let query = passbolt_sdk::ResourceQuery {
+            search,
+            ..Default::default()
+        };
+        let views = passbolt_sdk::resource::list::list_resources(
+            &self.client,
+            query,
+            &[],
+            with_secrets.then_some(1),
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&views)
+    }
+
+    /// Create a resource of any type from `{name, resource_type?, username?, uris?, password?,
+    /// totp?, note?, pin_code?, custom_fields?, metadata_fields?, secret_fields?, …}`.
+    /// The type follows the fields and the server's default version when not given.
+    #[wasm_bindgen(js_name = "createResource")]
+    pub async fn create_resource(&self, new_resource: JsValue) -> Result<JsValue, JsError> {
+        let new_resource: passbolt_sdk::resource::create::NewResource =
+            serde_wasm_bindgen::from_value(new_resource)
+                .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
+        let resource = passbolt_sdk::resource::create::create_resource(&self.client, &new_resource)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&resource)
+    }
+
+    /// Update a resource from the fields to change: `{name?, password?, totp?, remove_totp?,
+    /// expired?, …}`; `expired: null` clears the expiry.
+    #[wasm_bindgen(js_name = "updateResource")]
+    pub async fn update_resource(&self, id: String, changes: JsValue) -> Result<JsValue, JsError> {
+        let changes: passbolt_sdk::resource::update::ResourceChanges =
+            serde_wasm_bindgen::from_value(changes)
+                .map_err(|error| JsError::new(&format!("Invalid changes: {error}")))?;
+        let resource = passbolt_sdk::resource::update::update_resource(&self.client, &id, &changes)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&resource)
+    }
+
+    /// Share a resource with users and groups (`permissionType` 1, 7 or 15), or revoke with -1.
+    #[wasm_bindgen(js_name = "shareResource")]
+    pub async fn share_resource(
+        &self,
+        id: String,
+        user_ids: Vec<String>,
+        group_ids: Vec<String>,
+        permission_type: i32,
+    ) -> Result<(), JsError> {
+        passbolt_sdk::resource::share::share_resource(
+            &self.client,
+            &id,
+            &user_ids,
+            &group_ids,
+            permission_type,
+        )
+        .await
+        .map_err(to_js_error)
+    }
+
+    /// Share a folder, and with `withContent` the sub-folders and resources the user owns.
+    #[wasm_bindgen(js_name = "shareFolder")]
+    pub async fn share_folder(
+        &self,
+        id: String,
+        user_ids: Vec<String>,
+        group_ids: Vec<String>,
+        permission_type: i32,
+        with_content: bool,
+    ) -> Result<(), JsError> {
+        passbolt_sdk::folder::share::share_folder(
+            &self.client,
+            &id,
+            &user_ids,
+            &group_ids,
+            permission_type,
+            with_content,
+        )
+        .await
+        .map_err(to_js_error)
+    }
+
+    /// Move a resource into a folder, or to the root without one.
+    #[wasm_bindgen(js_name = "moveResource")]
+    pub async fn move_resource(
+        &self,
+        id: String,
+        folder_id: Option<String>,
+    ) -> Result<(), JsError> {
+        self.client
+            .move_resource(&id, folder_id.as_deref())
+            .await
+            .map_err(to_js_error)
+    }
+
+    /// Move a folder into another one, or to the root without one.
+    #[wasm_bindgen(js_name = "moveFolder")]
+    pub async fn move_folder(&self, id: String, folder_id: Option<String>) -> Result<(), JsError> {
+        self.client
+            .move_folder(&id, folder_id.as_deref())
+            .await
+            .map_err(to_js_error)
     }
 
     /// Delete a resource.

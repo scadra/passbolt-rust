@@ -10,6 +10,9 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use std::cell::RefCell;
+use std::sync::Mutex;
+
 use js_sys::{Array, Uint8Array};
 use passbolt_sdk::error::TransportError;
 use passbolt_sdk::http::{HttpClient, HttpResponse};
@@ -49,13 +52,44 @@ fn build_request_headers<'header>(
     merged
 }
 
+const CSRF_COOKIE: &str = "csrfToken";
+
+thread_local! {
+    /// JS function giving the `csrfToken` cookie, sync or as a promise: `fetch` cannot read
+    /// `Set-Cookie`. WASM runs on one thread, and a JS function is not `Send`.
+    static CSRF_TOKEN_PROVIDER: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+/// Read the CSRF token with `provider` (e.g. `browser.cookies.get` in an extension), instead of
+/// `document.cookie`, which only pages served by Passbolt can read.
+pub fn set_csrf_token_provider(provider: Option<js_sys::Function>) {
+    CSRF_TOKEN_PROVIDER.with(|stored| *stored.borrow_mut() = provider);
+}
+
 /// Browser-native HTTP client using `fetch()` with cookie credentials.
-pub struct WasmHttpClient;
+///
+/// The CSRF cookie is read again after each response, as the browser extension does.
+pub struct WasmHttpClient {
+    csrf_token: Mutex<Option<String>>,
+}
 
 impl WasmHttpClient {
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            csrf_token: Mutex::new(None),
+        }
+    }
+
+    async fn refresh_csrf_token(&self) {
+        let provider = CSRF_TOKEN_PROVIDER.with(|stored| stored.borrow().clone());
+        let token = match provider {
+            Some(provider) => provided_token(&provider).await,
+            None => document_cookie().and_then(|cookies| cookie_value(&cookies, CSRF_COOKIE)),
+        };
+        if let (Some(token), Ok(mut stored)) = (token, self.csrf_token.lock()) {
+            *stored = Some(token);
+        }
     }
 
     async fn fetch(
@@ -120,6 +154,7 @@ impl WasmHttpClient {
             .await
             .map_err(|error| js_err("read body", &error))?;
         let body_bytes = Uint8Array::new(&body_value).to_vec();
+        self.refresh_csrf_token().await;
 
         Ok(HttpResponse {
             status,
@@ -129,7 +164,40 @@ impl WasmHttpClient {
     }
 }
 
+/// The token the provider returns, directly or through a promise.
+async fn provided_token(provider: &js_sys::Function) -> Option<String> {
+    let returned = provider.call0(&JsValue::NULL).ok()?;
+    let value = match returned.dyn_into::<js_sys::Promise>() {
+        Ok(promise) => JsFuture::from(promise).await.ok()?,
+        Err(value) => value,
+    };
+    value.as_string().filter(|token| !token.is_empty())
+}
+
+/// `document.cookie`, absent in a worker.
+fn document_cookie() -> Option<String> {
+    let document = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("document")).ok()?;
+    js_sys::Reflect::get(&document, &JsValue::from_str("cookie"))
+        .ok()?
+        .as_string()
+}
+
+/// The value of cookie `name` in a `document.cookie` string.
+fn cookie_value(cookies: &str, name: &str) -> Option<String> {
+    cookies.split("; ").find_map(|cookie| {
+        let (cookie_name, value) = cookie.split_once('=')?;
+        (cookie_name == name && !value.is_empty()).then(|| value.to_string())
+    })
+}
+
 impl HttpClient for WasmHttpClient {
+    fn cookie(&self, _url: &str, name: &str) -> Option<String> {
+        if name != CSRF_COOKIE {
+            return None;
+        }
+        self.csrf_token.lock().ok()?.clone()
+    }
+
     async fn get(
         &self,
         url: &str,
@@ -187,6 +255,24 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[rstest]
+    #[case::only_cookie("csrfToken=abc", Some("abc"))]
+    #[case::among_others("passbolt_session=s; csrfToken=abc; theme=dark", Some("abc"))]
+    #[case::prefix_is_not_the_name("csrfTokenOld=old; csrfToken=new", Some("new"))]
+    #[case::absent("passbolt_session=s", None)]
+    #[case::empty_value("csrfToken=", None)]
+    fn test_cookie_value(#[case] cookies: &str, #[case] expected: Option<&str>) {
+        assert_eq!(cookie_value(cookies, CSRF_COOKIE).as_deref(), expected);
+    }
+
+    #[test]
+    fn test_a_new_client_has_no_csrf_token() {
+        assert_eq!(
+            WasmHttpClient::new().cookie("https://passbolt.test", CSRF_COOKIE),
+            None
+        );
+    }
 
     #[test]
     fn test_build_request_headers_without_caller_headers_is_json_defaults() {

@@ -630,6 +630,15 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// The decrypted secrets of `resources` by resource id, as written, or why one could not be
     /// decrypted; resources without a secret for the user are left out. Decrypted in parallel
     /// on `workers` threads (0: one per CPU).
+    // Without `native`, decryption is sequential: nothing to await, nothing to share.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(
+            clippy::unused_async,
+            clippy::unused_async_trait_impl,
+            clippy::needless_collect
+        )
+    )]
     pub async fn decrypt_secret_texts_batch(
         &self,
         resources: &[Resource],
