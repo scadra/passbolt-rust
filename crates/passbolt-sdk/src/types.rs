@@ -582,7 +582,31 @@ pub struct UpdateGroupPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub groups_users: Option<Vec<GroupUserPayload>>,
+    pub groups_users: Option<Vec<GroupMembershipChange>>,
+    /// The secrets new members need, from the update dry-run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<GroupSecretPayload>>,
+}
+
+/// A membership change: a new member by `user_id`, or an existing membership by its `id`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GroupMembershipChange {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_admin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete: Option<bool>,
+}
+
+/// A secret encrypted for a new group member.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupSecretPayload {
+    pub resource_id: String,
+    pub user_id: String,
+    pub data: String,
 }
 
 #[derive(Debug, Serialize)]
