@@ -22,7 +22,11 @@ pub async fn update_user<H: HttpClient>(
     last_name: Option<&str>,
     role: Option<&str>,
 ) -> Result<User, PassboltError> {
-    let role_id = role.map(str::to_string);
+    // As go-passbolt: the API takes the role id, found by the role name.
+    let role_id = match role {
+        Some(role) => Some(client.get_role_id_by_name(role).await?),
+        None => None,
+    };
 
     let profile = if first_name.is_some() || last_name.is_some() {
         Some(UpdateUserProfile {

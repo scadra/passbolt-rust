@@ -258,7 +258,6 @@ async fn removing_a_group_member_uses_the_membership_id() {
 }
 
 #[tokio::test]
-#[ignore = "USR-1: update user --role sends the role name as role_id"]
 async fn update_user_resolves_the_role_name() {
     let fake = FakePassbolt::new();
     fake.with_directory();
