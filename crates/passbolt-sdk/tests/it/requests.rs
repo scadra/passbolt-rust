@@ -345,7 +345,6 @@ async fn save_password_expiry_settings_posts_the_settings() {
 }
 
 #[tokio::test]
-#[ignore = "SDK-EXP-1: the default expiry period is sent as default_expiry_period_days, the API field is default_expiry_period"]
 async fn password_expiry_settings_use_the_api_field_for_the_default_period() {
     let (_fake, client) = logged_in_with(
         "GET",

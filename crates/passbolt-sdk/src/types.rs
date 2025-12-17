@@ -739,7 +739,8 @@ pub struct Aro {
 pub struct PasswordExpirySettings {
     #[serde(default)]
     pub id: Option<String>,
-    #[serde(default)]
+    /// Days; `default_expiry_period` in the API.
+    #[serde(default, rename = "default_expiry_period")]
     pub default_expiry_period_days: Option<u32>,
     #[serde(default)]
     pub policy_override: Option<bool>,
