@@ -68,7 +68,6 @@ fn expiry_rejects_invalid_input(#[case] input: &str) {
 }
 
 #[test]
-#[ignore = "RES-17: weeks and combined durations, accepted by go-passbolt-cli"]
 fn expiry_accepts_weeks_and_combined_durations() {
     assert!(parse_expiry("2w").is_ok());
     assert!(parse_expiry("1w2d3h").is_ok());

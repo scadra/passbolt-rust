@@ -10,7 +10,7 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
@@ -18,7 +18,7 @@ use serde_json::Value;
 ///
 /// Accepted formats:
 /// - RFC3339 date/time:   `"2025-12-31T00:00:00Z"`
-/// - Duration from now:   `"7d"`, `"48h"`, `"30m"`
+/// - Duration from now:   `"2w"`, `"7d"`, `"48h"`, `"30m"`, or a sum: `"1w2d3h"`
 /// - Clear expiry:        `"none"` / `""`
 pub fn parse_expiry(input: &str) -> Result<Value> {
     let input = input.trim();
@@ -32,22 +32,59 @@ pub fn parse_expiry(input: &str) -> Result<Value> {
         return Ok(Value::String(expires_at.to_rfc3339()));
     }
 
-    // Duration from now: 7d, 48h, 30m
-    let to_delta = match input.chars().last() {
-        Some('d') => Duration::try_days,
-        Some('h') => Duration::try_hours,
-        Some('m') => Duration::try_minutes,
-        _ => bail!(
+    // Duration from now: 7d, 48h, 30m, or a sum such as 1w2d3h.
+    let delta = parse_duration(input).ok_or_else(|| {
+        anyhow::anyhow!(
             "Unrecognised expiry format: {input}  \
-             (use RFC3339, a duration like '7d'/'48h'/'30m', or 'none')"
-        ),
-    };
-    let amount: i64 = input[..input.len() - 1]
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid expiry duration: {input}"))?;
-    let expires_at = to_delta(amount)
-        .and_then(|delta| Utc::now().checked_add_signed(delta))
+             (use RFC3339, a duration like '2w'/'7d'/'48h'/'30m' or '1w2d3h', or 'none')"
+        )
+    })?;
+    let expires_at = Utc::now()
+        .checked_add_signed(delta)
         .ok_or_else(|| anyhow::anyhow!("Expiry duration out of range: {input}"))?;
 
     Ok(Value::String(expires_at.to_rfc3339()))
+}
+
+/// A sum of `<amount><unit>` with units `w`, `d`, `h`, `m`, `s`; `None` if anything else.
+fn parse_duration(input: &str) -> Option<Duration> {
+    let mut total = Duration::zero();
+    let mut rest = input;
+    while !rest.is_empty() {
+        let digits = rest.find(|character: char| !character.is_ascii_digit())?;
+        let (amount, after) = rest.split_at(digits);
+        let amount: i64 = amount.parse().ok()?;
+        let mut units = after.chars();
+        let part = match units.next()? {
+            'w' => Duration::try_weeks(amount),
+            'd' => Duration::try_days(amount),
+            'h' => Duration::try_hours(amount),
+            'm' => Duration::try_minutes(amount),
+            's' => Duration::try_seconds(amount),
+            _ => None,
+        }?;
+        total = total.checked_add(&part)?;
+        rest = units.as_str();
+    }
+    Some(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case("2w", Some(Duration::weeks(2)))]
+    #[case("7d", Some(Duration::days(7)))]
+    #[case("1w2d3h", Some(Duration::weeks(1) + Duration::days(2) + Duration::hours(3)))]
+    #[case("1h30m", Some(Duration::minutes(90)))]
+    #[case("", Some(Duration::zero()))]
+    #[case("d", None)]
+    #[case("7", None)]
+    #[case("7x", None)]
+    #[case("1w-2d", None)]
+    #[case("99999999999999999999w", None)]
+    fn test_parse_duration(#[case] input: &str, #[case] expected: Option<Duration>) {
+        assert_eq!(parse_duration(input), expected);
+    }
 }
