@@ -1066,13 +1066,39 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     pub async fn get_group(&self, id: &str) -> Result<Group, PassboltError> {
         let id = uuid_segment(id)?;
-        self.get(&format!("/groups/{id}.json?contain[groups_users]=1"))
-            .await
+        self.get(&format!(
+            "/groups/{id}.json?contain[groups_users]=1&contain[groups_users.user.profile]=1"
+        ))
+        .await
     }
 
     pub async fn create_group(&self, payload: &CreateGroupPayload) -> Result<Group, PassboltError> {
         let body = serde_json::to_value(payload)?;
         self.post("/groups.json", &body).await
+    }
+
+    /// `PUT /groups/{id}/dry-run.json`: the secrets new members need, and the user's own
+    /// secrets to encrypt them from.
+    pub async fn update_group_dry_run(
+        &self,
+        id: &str,
+        payload: &UpdateGroupPayload,
+    ) -> Result<Value, PassboltError> {
+        let id = uuid_segment(id)?;
+        let body = serde_json::to_value(payload)?;
+        self.put_request(&format!("/groups/{id}/dry-run.json"), &body)
+            .await
+    }
+
+    /// Decrypt a message encrypted for the user.
+    pub(crate) fn decrypt_text(&self, armored: &str) -> Result<String, PassboltError> {
+        let plaintext = crypto::decrypt_message(
+            armored,
+            &self.private_key.key,
+            self.passphrase.expose_secret(),
+        )?;
+        String::from_utf8(plaintext)
+            .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))
     }
 
     pub async fn update_group(

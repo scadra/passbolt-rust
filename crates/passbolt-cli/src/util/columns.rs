@@ -13,7 +13,7 @@
 //! Columns of `list folder`, `list user` and `list group`, named as go-passbolt-cli names them.
 
 use anyhow::{bail, Result};
-use passbolt_sdk::types::{Folder, Group, User};
+use passbolt_sdk::types::{Folder, Group, GroupUser, User};
 use serde_json::{Map, Value};
 
 use crate::util::output;
@@ -244,6 +244,65 @@ pub const GROUP_COLUMNS: [Column<Group>; 5] = [
     },
 ];
 
+/// Members of `get group`, as go-passbolt-cli shows them.
+pub const GROUP_MEMBER_DEFAULTS: [&str; 5] = [
+    "user_id",
+    "username",
+    "first_name",
+    "last_name",
+    "is_group_manager",
+];
+pub const GROUP_MEMBER_COLUMNS: [Column<GroupUser>; 5] = [
+    Column {
+        name: "user_id",
+        aliases: &[],
+        header: "User ID",
+        value: |member| member.user_id.clone().into(),
+    },
+    Column {
+        name: "username",
+        aliases: &[],
+        header: "Username",
+        value: |member| {
+            member
+                .user
+                .as_ref()
+                .and_then(|user| user.username.clone())
+                .into()
+        },
+    },
+    Column {
+        name: "first_name",
+        aliases: &["user_first_name"],
+        header: "First Name",
+        value: |member| {
+            member
+                .user
+                .as_ref()
+                .map(|user| user.first_name().to_string())
+                .into()
+        },
+    },
+    Column {
+        name: "last_name",
+        aliases: &["user_last_name"],
+        header: "Last Name",
+        value: |member| {
+            member
+                .user
+                .as_ref()
+                .map(|user| user.last_name().to_string())
+                .into()
+        },
+    },
+    Column {
+        name: "is_group_manager",
+        aliases: &["manager", "role"],
+        header: "Manager",
+        value: |member| member.is_admin.unwrap_or(false).into(),
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +341,27 @@ mod tests {
 
         let names: Vec<&str> = selected.iter().map(|column| column.name).collect();
         assert_eq!(names, FOLDER_DEFAULTS);
+    }
+
+    #[test]
+    fn test_group_members_accept_go_passbolt_cli_names() {
+        let names: Vec<&str> = resolve(
+            &GROUP_MEMBER_COLUMNS,
+            &requested(&[
+                "UserID",
+                "Username",
+                "UserFirstName",
+                "UserLastName",
+                "IsGroupManager",
+            ]),
+            &GROUP_MEMBER_DEFAULTS,
+        )
+        .unwrap()
+        .iter()
+        .map(|column| column.name)
+        .collect();
+
+        assert_eq!(names, GROUP_MEMBER_DEFAULTS);
     }
 
     #[test]

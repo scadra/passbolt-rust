@@ -26,6 +26,12 @@ fn betty_path() -> String {
 
 async fn logged_in_accepting_group_update() -> (FakePassbolt, Client) {
     let fake = FakePassbolt::new();
+    fake.on("GET", &group_path(), data::group());
+    fake.on(
+        "PUT",
+        &format!("/groups/{GROUP_ID}/dry-run.json"),
+        json!({"dry-run": {"SecretsNeeded": [], "Secrets": []}}),
+    );
     fake.on("PUT", &group_path(), data::group());
     let client = login_ada(&fake).await;
     (fake, client)
@@ -55,19 +61,6 @@ async fn renaming_a_group_sends_no_membership() {
         fake.body_of("PUT", &group_path()),
         json!({ "name": "Platform" })
     );
-}
-
-#[tokio::test]
-async fn removed_group_members_are_marked_for_deletion() {
-    let (fake, client) = logged_in_accepting_group_update().await;
-
-    update_group(&client, GROUP_ID, None, &[], &[], &[BETTY_ID.into()])
-        .await
-        .unwrap();
-
-    let membership = &fake.body_of("PUT", &group_path())["groups_users"][0];
-    assert_eq!(membership["delete"], true);
-    assert_eq!(membership["is_admin"], false);
 }
 
 #[tokio::test]

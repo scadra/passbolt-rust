@@ -223,7 +223,6 @@ async fn share_keeps_the_secret_unchanged() {
 }
 
 #[tokio::test]
-#[ignore = "GRP-1: adding a group member does not send the secrets they need"]
 async fn adding_a_group_member_sends_the_needed_secrets() {
     let fake = fake_serving_group();
     fake.on(
@@ -244,7 +243,6 @@ async fn adding_a_group_member_sends_the_needed_secrets() {
 }
 
 #[tokio::test]
-#[ignore = "GRP-2: removing a member sends the user id instead of the membership id"]
 async fn removing_a_group_member_uses_the_membership_id() {
     let fake = fake_serving_group();
     let client = login_ada(&fake).await;
@@ -260,7 +258,6 @@ async fn removing_a_group_member_uses_the_membership_id() {
 }
 
 #[tokio::test]
-#[ignore = "USR-1: update user --role sends the role name as role_id"]
 async fn update_user_resolves_the_role_name() {
     let fake = FakePassbolt::new();
     fake.with_directory();
@@ -523,4 +520,32 @@ async fn revoking_a_group_deletes_its_permission() {
         fake.body_of("PUT", &share_path())["permissions"],
         json!([{ "id": "p-ops", "aro": "Group", "aro_foreign_key": GROUP_ID, "delete": true }])
     );
+}
+
+#[tokio::test]
+async fn removing_a_user_who_is_not_a_member_is_refused() {
+    let fake = fake_serving_group();
+    let client = login_ada(&fake).await;
+
+    let error = group_update::update_group(&client, GROUP_ID, None, &[], &[], &[CAROL_ID.into()])
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, PassboltError::InvalidArgument(_)),
+        "{error:?}"
+    );
+    assert!(fake.requests_to("PUT", &group_path()).is_empty());
+}
+
+#[tokio::test]
+async fn adding_a_member_with_the_role_they_have_changes_nothing() {
+    let fake = fake_serving_group();
+    let client = login_ada(&fake).await;
+
+    group_update::update_group(&client, GROUP_ID, None, &[BETTY_ID.into()], &[], &[])
+        .await
+        .unwrap();
+
+    assert!(fake.requests_to("PUT", &group_path()).is_empty());
 }

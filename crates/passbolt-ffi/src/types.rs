@@ -935,7 +935,7 @@ mod tests {
     fn test_password_expiry_settings_keeps_every_field() {
         let settings: types::PasswordExpirySettings = parse(json!({
             "id": "settings-1",
-            "default_expiry_period_days": 90,
+            "default_expiry_period": 90,
             "policy_override": true,
             "automatic_expiry": false,
             "automatic_update": true

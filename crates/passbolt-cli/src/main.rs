@@ -396,27 +396,19 @@ async fn dispatch(
                 }
             }
 
-            GetEntity::Group { id, .. } => {
+            GetEntity::Group { id, column } => {
                 let group = client.get_group(id).await?;
                 if json_output {
                     output::print_json(&group)?;
                 } else {
                     output::print_kv(&[("ID", &group.id), ("Name", &group.name)]);
-                    let rows: Vec<Vec<String>> = group
-                        .groups_users
-                        .iter()
-                        .map(|group_user| {
-                            vec![
-                                group_user.user_id.clone().unwrap_or_default(),
-                                if group_user.is_admin.unwrap_or(false) {
-                                    "Manager".into()
-                                } else {
-                                    "Member".into()
-                                },
-                            ]
-                        })
-                        .collect();
-                    output::print_table(&["User ID", "Role"], rows);
+                    util::columns::print(
+                        &group.groups_users,
+                        &util::columns::GROUP_MEMBER_COLUMNS,
+                        column,
+                        &util::columns::GROUP_MEMBER_DEFAULTS,
+                        false,
+                    )?;
                 }
             }
 
