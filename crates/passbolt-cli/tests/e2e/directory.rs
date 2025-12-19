@@ -92,7 +92,6 @@ fn renamed_user_reads_back() {
 }
 
 #[test]
-#[ignore = "USR-1: update user --role sends the role name as role_id"]
 fn promoted_user_becomes_admin() {
     let (_, user) = create_user("Edith");
 
@@ -139,7 +138,6 @@ fn added_member_is_in_the_group() {
 }
 
 #[test]
-#[ignore = "GRP-2: removing a member sends the user id instead of the membership id"]
 fn removed_member_leaves_the_group() {
     let manager = admin_id();
     let member = share_with_user_id();
@@ -277,7 +275,6 @@ fn group_table_shows_the_manager() {
 }
 
 #[test]
-#[ignore = "GRP-3: get group ignores --column and shows no member username"]
 fn group_table_shows_the_requested_columns() {
     let member = share_with_user_id();
     let group = create_group(&unique_name("group"), &admin_id(), &[&member]);
