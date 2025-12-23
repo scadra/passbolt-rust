@@ -1,0 +1,3 @@
+# `cargo test --target wasm32-unknown-unknown -p passbolt-wasm` runs the WASM tests in Node.
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
