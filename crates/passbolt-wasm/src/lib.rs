@@ -606,6 +606,41 @@ mod wasm_tests {
         include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
 
     #[wasm_bindgen_test]
+    fn test_maps_reach_js_as_plain_objects() {
+        let value = to_js_value(&serde_json::json!({"metadata": {"name": "GitHub"}})).unwrap();
+
+        let metadata = js_sys::Reflect::get(&value, &"metadata".into()).unwrap();
+        let name = js_sys::Reflect::get(&metadata, &"name".into()).unwrap();
+        assert_eq!(name.as_string().as_deref(), Some("GitHub"));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_login_options_are_read_from_an_object() {
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"totpCode".into(), &"123456".into()).unwrap();
+        js_sys::Reflect::set(&options, &"absent".into(), &JsValue::NULL).unwrap();
+
+        assert_eq!(
+            option(&options, "totpCode")
+                .and_then(|code| code.as_string())
+                .as_deref(),
+            Some("123456")
+        );
+        assert!(option(&options, "absent").is_none());
+        assert!(option(&JsValue::UNDEFINED, "totpCode").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn test_the_given_totp_code_answers_the_mfa_challenge() {
+        use passbolt_sdk::MfaProvider;
+
+        assert_eq!(
+            GivenTotpCode("123456".into()).get_totp_code().unwrap(),
+            "123456"
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn test_decrypt_message_with_wrong_key_is_error() {
         let armored = encrypt_message(b"for betty", vec![BETTY_PUBLIC.into()]).unwrap();
 
