@@ -605,6 +605,72 @@ mod wasm_tests {
     const BETTY_PUBLIC: &str =
         include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
 
+    const ADA_PRIVATE: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_private.asc");
+    const ADA_PUBLIC: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_public.asc");
+    const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
+
+    /// A `fetch` answering the `GPGAuth` login with `challenge`, and `/users/me.json`.
+    fn passbolt_fetch(challenge: &str) -> JsValue {
+        let factory = js_sys::Function::new_with_args(
+            "challenge, userId, armoredKey, fingerprint",
+            r#"
+            const json = (body, headers = {}) =>
+                new Response(JSON.stringify({ header: { status: "success" }, body }), { headers });
+            return async (request) => {
+                const body = request.method === "POST" ? await request.text() : "";
+                if (request.url.endsWith("/auth/login.json")) {
+                    return body.includes("user_token_result")
+                        ? json({ user: { id: userId } }, { "X-GPGAuth-Authenticated": "true" })
+                        : json(null, { "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge) });
+                }
+                if (request.url.includes("/users/me.json")) {
+                    return json({
+                        id: userId,
+                        username: "ada@passbolt.test",
+                        gpgkey: { armored_key: armoredKey, fingerprint },
+                    });
+                }
+                return new Response("{}", { status: 404 });
+            };
+            "#,
+        );
+        let arguments = js_sys::Array::of4(
+            &challenge.into(),
+            &ADA_ID.into(),
+            &ADA_PUBLIC.into(),
+            &get_key_fingerprint(ADA_PRIVATE).unwrap().into(),
+        );
+        factory.apply(&JsValue::NULL, &arguments).unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_login_answers_gpgauth_with_the_provided_csrf_token() {
+        let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
+        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
+        let global = js_sys::global();
+        let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
+        js_sys::Reflect::set(&global, &"fetch".into(), &passbolt_fetch(&challenge)).unwrap();
+        let options = js_sys::Object::new();
+        let provider = js_sys::Function::new_no_args("return 'csrf-from-provider';");
+        js_sys::Reflect::set(&options, &"csrfTokenProvider".into(), &provider).unwrap();
+
+        let session = PassboltSession::login(
+            "http://127.0.0.1:1".into(),
+            ADA_PRIVATE.into(),
+            "ada-passphrase".into(),
+            options.into(),
+        )
+        .await;
+
+        js_sys::Reflect::set(&global, &"fetch".into(), &real_fetch).unwrap();
+        crate::http::set_csrf_token_provider(None);
+        if let Err(error) = session {
+            let error = JsValue::from(error);
+            panic!("{:?}", js_sys::Reflect::get(&error, &"message".into()));
+        }
+    }
+
     #[wasm_bindgen_test]
     fn test_maps_reach_js_as_plain_objects() {
         let value = to_js_value(&serde_json::json!({"metadata": {"name": "GitHub"}})).unwrap();
