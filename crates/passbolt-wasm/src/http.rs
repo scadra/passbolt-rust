@@ -314,6 +314,49 @@ mod wasm_tests {
 
     use super::*;
 
+    const JSON_DATA_URL: &str = "data:application/json,%7B%7D";
+
+    /// The CSRF token the client holds after a response, read with `provider`.
+    async fn token_after_a_response(provider: Option<js_sys::Function>) -> Option<String> {
+        set_csrf_token_provider(provider);
+        let client = WasmHttpClient::new();
+        client.get(JSON_DATA_URL, &[]).await.unwrap();
+        set_csrf_token_provider(None);
+        client.cookie(JSON_DATA_URL, CSRF_COOKIE)
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_csrf_token_comes_from_the_provider() {
+        let provider = js_sys::Function::new_no_args("return 'from-provider';");
+
+        assert_eq!(
+            token_after_a_response(Some(provider)).await.as_deref(),
+            Some("from-provider")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_provider_may_return_a_promise() {
+        let provider = js_sys::Function::new_no_args("return Promise.resolve('from-promise');");
+
+        assert_eq!(
+            token_after_a_response(Some(provider)).await.as_deref(),
+            Some("from-promise")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_without_provider_nor_document_there_is_no_token() {
+        assert_eq!(token_after_a_response(None).await, None);
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_a_provider_without_token_keeps_none() {
+        let provider = js_sys::Function::new_no_args("return null;");
+
+        assert_eq!(token_after_a_response(Some(provider)).await, None);
+    }
+
     #[wasm_bindgen_test]
     async fn test_get_fetches_without_a_window() {
         let client = WasmHttpClient::new();

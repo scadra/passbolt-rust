@@ -42,7 +42,7 @@ There are several ways you can help out:
 
 * Create an issue on GitHub ONLY if you have found a bug
 * Review [enhancement or new feature requests](https://community.passbolt.com/c/backlog) on the community foum and contribute to the functional or technical specifications in the issues.
-* Fix a known bug: `cargo test -- --ignored` lists them, each test names its ticket
+* Fix a known bug: `cargo test -- --ignored` lists the ones with a failing test, each test names its ticket
 * Contribute to the [documentation](https://passbolt.com/help).
 * Write unit test cases to help increase test coverage.
 
@@ -72,7 +72,13 @@ If you have any suggestions or want to get involved in other ways feel free to g
 * Check for unnecessary whitespace with `git diff --check` before committing.
 * Use descriptive commit messages and reference the #issue number.
 * `cargo test --workspace` should continue to pass.
-* `cargo clippy --workspace -- -D warnings` and `cargo fmt --check` should not report anything.
+* `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` should not report anything.
+* For `passbolt-wasm`: `cargo clippy -p passbolt-wasm --target wasm32-unknown-unknown -- -D warnings`, and
+  `cargo test -p passbolt-wasm --target wasm32-unknown-unknown` runs its tests in Node; it needs Node and
+  `wasm-bindgen-test-runner` of the `wasm-bindgen` version in `Cargo.lock`
+  (`cargo install wasm-bindgen-cli --version <version>`).
+* The CI (`.github/workflows/ci.yml`) runs all of the above, a build with the minimum Rust version and a
+  gitleaks scan. The end-to-end tests need a Passbolt server: run them with `scripts/e2e.sh`.
 * Every new `.rs` file must start with the Passbolt license header: run `bash scripts/license-headers.sh`
   (or `bash scripts/license-headers.sh --fix` to add it).
 * Never log or print secrets (passphrases, private keys, decrypted secrets), even in `--debug` mode.
